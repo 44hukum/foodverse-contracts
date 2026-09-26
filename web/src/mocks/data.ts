@@ -5,6 +5,7 @@
  * handlers.ts and never written down).
  */
 import type { AdminUser, ContractDetail, ContractEvent, ContractStatus } from '../api/types';
+import { SEED_SIGNING_TOKENS } from '../sign/mocks/data';
 
 export const MOCK_ADMIN: AdminUser = {
   id: '11111111-1111-4111-8111-111111111111',
@@ -43,6 +44,11 @@ export function fakeSha256(seed: string): string {
 }
 
 let eventSeq = 1;
+
+/** Live links must not expire while the fixtures age; expiry is relative to now. */
+function daysFromNow(days: number): string {
+  return new Date(Date.now() + days * 86_400_000).toISOString();
+}
 
 function event(
   contractId: string,
@@ -184,7 +190,7 @@ export function seedContracts(): ContractDetail[] {
       signer_email: 'suman@thakalikitchen.example',
       created_at: '2026-09-24T04:30:00Z',
       sent_at: '2026-09-24T04:35:00Z',
-      expires_at: '2026-10-08T04:35:00Z',
+      expires_at: daysFromNow(12),
     }),
     seed({
       id: 'c0000003-0000-4000-8000-000000000003',
@@ -195,7 +201,7 @@ export function seedContracts(): ContractDetail[] {
       created_at: '2026-09-22T10:00:00Z',
       sent_at: '2026-09-22T10:05:00Z',
       first_viewed_at: '2026-09-23T02:40:00Z',
-      expires_at: '2026-10-06T10:05:00Z',
+      expires_at: daysFromNow(10),
     }),
     seed({
       id: 'c0000004-0000-4000-8000-000000000004',
@@ -247,6 +253,8 @@ export function seedContracts(): ContractDetail[] {
 
 export interface MockDb {
   contracts: ContractDetail[];
+  /** contract id -> the one active signing token. Replaced on re-send (rotation). */
+  signingTokens: Map<string, string>;
   nextEventId(): number;
 }
 
@@ -254,6 +262,7 @@ function createDb(): MockDb {
   const contracts = seedContracts();
   return {
     contracts,
+    signingTokens: new Map(SEED_SIGNING_TOKENS),
     nextEventId: () => eventSeq++,
   };
 }

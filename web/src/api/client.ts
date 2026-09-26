@@ -1,7 +1,8 @@
 /**
  * Thin fetch client implemented against openapi.yaml (CLAUDE.md rule 5).
  * Request and response shapes come from the generated types; nothing here is
- * hand-modelled. Bodies on the send endpoint are never logged (rule 6).
+ * hand-modelled. Bodies on the send and public endpoints are never logged
+ * (rule 6).
  */
 import { API_BASE_URL } from '../config';
 import { session } from '../auth/session';
@@ -14,8 +15,11 @@ import type {
   ListContractsQuery,
   LoginRequest,
   LoginResponse,
+  PublicContract,
   SendContractRequest,
   SendContractResponse,
+  SignatureResult,
+  SubmitSignatureRequest,
 } from './types';
 
 export class ApiError extends Error {
@@ -174,5 +178,28 @@ export function sendContractLink(
   return request<SendContractResponse>(`/admin/contracts/${encodeURIComponent(contractId)}/send`, {
     method: 'POST',
     json: body,
+  });
+}
+
+// ------------------------------------------------------------- public signing
+
+/**
+ * Loads the contract for the signer. The token travels only in the request
+ * path and is never logged or stored (rule 6). Side effect on the server:
+ * `sent` becomes `viewed` and a `link.viewed` event is written.
+ */
+export function getContractByToken(token: string): Promise<PublicContract> {
+  return request<PublicContract>(`/public/sign/${encodeURIComponent(token)}`, { auth: false });
+}
+
+/** Submits typed name, drawn signature (PNG data URL), and consent. Single use. */
+export function submitSignature(
+  token: string,
+  body: SubmitSignatureRequest,
+): Promise<SignatureResult> {
+  return request<SignatureResult>(`/public/sign/${encodeURIComponent(token)}/signature`, {
+    method: 'POST',
+    json: body,
+    auth: false,
   });
 }
