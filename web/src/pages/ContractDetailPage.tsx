@@ -18,7 +18,7 @@ import { CopyBox } from '../components/CopyBox';
 import { DualTime } from '../components/DualTime';
 import { ErrorBanner } from '../components/ErrorBanner';
 import { StatusBadge } from '../components/StatusBadge';
-import { formatDate } from '../lib/dates';
+import { formatDate } from '../util/dates';
 import { SignerCell } from './ContractListPage';
 
 interface IssuedLink {

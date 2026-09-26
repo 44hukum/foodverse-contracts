@@ -1,4 +1,4 @@
-import { errorMessage } from '../lib/errors';
+import { errorMessage } from '../util/errors';
 
 export function ErrorBanner({ error }: { error: unknown }) {
   if (!error) return null;

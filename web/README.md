@@ -29,7 +29,7 @@ src/
   api/        generated schema, typed fetch client, named aliases
   auth/       in-memory session (SPEC.md §4), provider, route guard
   components/ status badge, dual-timezone time, copy box, layout
-  lib/        date formatting (Asia/Kathmandu + UTC), validation, errors
+  util/       date formatting (Asia/Kathmandu + UTC), validation, errors
   mocks/      MSW handlers + fixture data (browser worker and node server)
   pages/      Login, ContractList, CreateContract, ContractDetail
   test/       vitest setup and render helpers

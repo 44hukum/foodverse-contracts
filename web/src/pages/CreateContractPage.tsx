@@ -5,8 +5,8 @@ import * as api from '../api/client';
 import { ApiError } from '../api/client';
 import { MAX_PDF_BYTES } from '../config';
 import { ErrorBanner } from '../components/ErrorBanner';
-import { validateCreateContract } from '../lib/validation';
-import type { CreateContractFields, FieldErrors } from '../lib/validation';
+import { validateCreateContract } from '../util/validation';
+import type { CreateContractFields, FieldErrors } from '../util/validation';
 
 const EMPTY: CreateContractFields = {
   title: '',

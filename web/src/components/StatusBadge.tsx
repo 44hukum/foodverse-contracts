@@ -1,5 +1,5 @@
 import type { ContractStatus } from '../api/types';
-import { statusLabel } from '../lib/status';
+import { statusLabel } from '../util/status';
 
 export function StatusBadge({ status }: { status: ContractStatus }) {
   return (

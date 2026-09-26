@@ -1,4 +1,4 @@
-import { formatDual } from '../lib/dates';
+import { formatDual } from '../util/dates';
 
 /** Renders a UTC instant as Kathmandu time with UTC underneath (rule 14). */
 export function DualTime({ iso, emptyText = '—' }: { iso: string | null | undefined; emptyText?: string }) {

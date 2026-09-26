@@ -7,7 +7,7 @@ import type { ContractStatus, ContractSummary, ListContractsQuery } from '../api
 import { DualTime } from '../components/DualTime';
 import { ErrorBanner } from '../components/ErrorBanner';
 import { StatusBadge } from '../components/StatusBadge';
-import { statusLabel } from '../lib/status';
+import { statusLabel } from '../util/status';
 
 const PAGE_SIZE = 25;
 
