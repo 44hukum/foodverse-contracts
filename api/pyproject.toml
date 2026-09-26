@@ -21,6 +21,7 @@ dependencies = [
     "pypdf[crypto]>=6,<7",
     "reportlab>=4.2,<6",
     "uharfbuzz>=0.56.2",
+    "boto3>=1.43.103",
 ]
 
 [dependency-groups]
@@ -34,6 +35,8 @@ dev = [
     "types-PyYAML>=6.0",
     "types-reportlab",
     "python-dotenv>=1.0",
+    "moto[s3]>=5.2.3",
+    "boto3-stubs[s3]>=1.43.103",
 ]
 
 [build-system]
