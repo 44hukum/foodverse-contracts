@@ -10,6 +10,7 @@ from reportlab.lib import colors
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
+from app.pdf.fonts import draw_string, string_width
 from app.pdf.timefmt import DEFAULT_DISPLAY_TIMEZONE, format_both
 
 BLOCK_MARGIN = 36.0  # distance from the page's bottom and left edge, in points
@@ -19,9 +20,6 @@ BLOCK_GAP = 10.0  # clearance required above and below the block
 IMAGE_MAX_WIDTH = 180.0
 IMAGE_MAX_HEIGHT = 46.0
 
-_FONT = "Helvetica"
-_FONT_BOLD = "Helvetica-Bold"
-
 
 def block_band(bottom: float) -> tuple[float, float]:
     """Vertical band the block needs free on a page whose visible bottom is ``bottom``."""
@@ -29,17 +27,15 @@ def block_band(bottom: float) -> tuple[float, float]:
     return low, low + BLOCK_HEIGHT + 2 * BLOCK_GAP
 
 
-def _fit(
-    pdf: canvas.Canvas, text: str, font: str, size: float, max_width: float
-) -> tuple[str, float]:
+def _fit(text: str, size: float, max_width: float, *, bold: bool = False) -> tuple[str, float]:
     """Shrink the font (down to 6 pt), then truncate with an ellipsis, so ``text`` fits."""
-    while size > 6 and pdf.stringWidth(text, font, size) > max_width:
+    while size > 6 and string_width(text, size, bold=bold) > max_width:
         size -= 0.5
-    if pdf.stringWidth(text, font, size) <= max_width:
+    if string_width(text, size, bold=bold) <= max_width:
         return text, size
-    while text and pdf.stringWidth(text + "…", font, size) > max_width:
+    while text and string_width(text + "\u2026", size, bold=bold) > max_width:
         text = text[:-1]
-    return text + "…", size
+    return text + "\u2026", size
 
 
 def render_signature_block(
@@ -81,22 +77,17 @@ def render_signature_block(
     pdf.line(x0 + 8, rule_y, x0 + width - 8, rule_y)
 
     pdf.setFillColor(colors.black)
-    line, size = _fit(pdf, f"Signed electronically by {typed_name}", _FONT_BOLD, 9, inner)
-    pdf.setFont(_FONT_BOLD, size)
-    pdf.drawString(x0 + 8, rule_y - 12, line)
+    line, size = _fit(f"Signed electronically by {typed_name}", 9, inner, bold=True)
+    draw_string(pdf, x0 + 8, rule_y - 12, line, size, bold=True)
 
     local_line, utc_line = format_both(signed_at, tz_name)
     for offset, text in ((22, local_line), (31, utc_line)):
-        line, size = _fit(pdf, text, _FONT, 7.5, inner)
-        pdf.setFont(_FONT, size)
-        pdf.drawString(x0 + 8, rule_y - offset, line)
+        line, size = _fit(text, 7.5, inner)
+        draw_string(pdf, x0 + 8, rule_y - offset, line, size)
 
     pdf.setFillColor(colors.HexColor("#555555"))
-    line, size = _fit(
-        pdf, f"Contract {contract_id} - see the Signature Certificate page", _FONT, 6.5, inner
-    )
-    pdf.setFont(_FONT, size)
-    pdf.drawString(x0 + 8, y0 + 6, line)
+    line, size = _fit(f"Contract {contract_id} - see the Signature Certificate page", 6.5, inner)
+    draw_string(pdf, x0 + 8, y0 + 6, line, size)
 
     pdf.showPage()
     pdf.save()

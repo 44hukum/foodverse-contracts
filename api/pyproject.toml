@@ -20,6 +20,7 @@ dependencies = [
     "pillow>=11",
     "pypdf[crypto]>=6,<7",
     "reportlab>=4.2,<6",
+    "uharfbuzz>=0.56.2",
 ]
 
 [dependency-groups]

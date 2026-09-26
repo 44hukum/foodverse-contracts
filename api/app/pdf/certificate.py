@@ -27,6 +27,7 @@ from reportlab.platypus import (
     TableStyle,
 )
 
+from app.pdf.fonts import LATIN, LATIN_BOLD, paragraph_markup, register_fonts
 from app.pdf.timefmt import DEFAULT_DISPLAY_TIMEZONE, format_both
 
 CERTIFICATE_TEXT_VERSION = "v0-draft"
@@ -83,19 +84,20 @@ class DocumentFacts:
 
 
 def _styles() -> dict[str, ParagraphStyle]:
-    body = ParagraphStyle("body", fontName="Helvetica", fontSize=9, leading=12, splitLongWords=1)
+    register_fonts()
+    body = ParagraphStyle(
+        "body", fontName=LATIN, fontSize=9, leading=12, splitLongWords=1, shaping=1
+    )
     return {
         "body": body,
-        "label": ParagraphStyle("label", parent=body, fontName="Helvetica-Bold"),
+        "label": ParagraphStyle("label", parent=body, fontName=LATIN_BOLD),
         "mono": ParagraphStyle("mono", parent=body, fontName="Courier", fontSize=8, leading=10),
         "small": ParagraphStyle("small", parent=body, fontSize=8, leading=10),
-        "title": ParagraphStyle(
-            "title", parent=body, fontName="Helvetica-Bold", fontSize=16, leading=20
-        ),
+        "title": ParagraphStyle("title", parent=body, fontName=LATIN_BOLD, fontSize=16, leading=20),
         "h2": ParagraphStyle(
             "h2",
             parent=body,
-            fontName="Helvetica-Bold",
+            fontName=LATIN_BOLD,
             fontSize=11,
             leading=14,
             spaceBefore=8,
@@ -152,15 +154,16 @@ def _events_table(
     if not events:
         return Paragraph(escape(NOT_RECORDED), styles["body"])
     small = styles["small"]
-    header = [Paragraph(f"<b>{h}</b>", small) for h in ("#", "Event", "Actor", tz_name, "UTC")]
+    head = ParagraphStyle("head", parent=small, fontName=LATIN_BOLD)
+    header = [Paragraph(escape(h), head) for h in ("#", "Event", "Actor", tz_name, "UTC")]
     data: list[list[Paragraph]] = [header]
     for index, event in enumerate(events, start=1):
         local, utc = format_both(event.occurred_at, tz_name)
         data.append(
             [
                 Paragraph(str(index), small),
-                Paragraph(escape(event.event_type), small),
-                Paragraph(escape(event.actor_type), small),
+                Paragraph(paragraph_markup(event.event_type), small),
+                Paragraph(paragraph_markup(event.actor_type), small),
                 Paragraph(escape(local), small),
                 Paragraph(escape(utc), small),
             ]
@@ -207,7 +210,7 @@ def render_certificate(
         Paragraph("Document", styles["h2"]),
         _facts_table(
             [
-                ("Title", escape(details.title), "body"),
+                ("Title", paragraph_markup(details.title), "body"),
                 ("Original PDF SHA-256", escape(facts.original_sha256), "mono"),
                 ("Pages", f"{facts.page_count:,}", "body"),
                 ("Size", escape(_human_size(facts.size_bytes)), "body"),
@@ -218,9 +221,9 @@ def render_certificate(
         Paragraph("Signer", styles["h2"]),
         _facts_table(
             [
-                ("Name (as entered by admin)", escape(details.signer_name), "body"),
-                ("Typed name (as entered by signer)", escape(typed_name), "body"),
-                ("Email", escape(details.signer_email), "body"),
+                ("Name (as entered by admin)", paragraph_markup(details.signer_name), "body"),
+                ("Typed name (as entered by signer)", paragraph_markup(typed_name), "body"),
+                ("Email", paragraph_markup(details.signer_email), "body"),
             ],
             styles,
             width,
@@ -232,13 +235,17 @@ def render_certificate(
                 ("Link sent at", _both_lines(details.link_sent_at, tz_name), "body"),
                 ("Link expiry", _both_lines(details.link_expires_at, tz_name), "body"),
                 ("Signer IP address", escape(details.signer_ip or NOT_RECORDED), "mono"),
-                ("Signer user agent", escape(details.signer_user_agent or NOT_RECORDED), "small"),
+                (
+                    "Signer user agent",
+                    paragraph_markup(details.signer_user_agent or NOT_RECORDED),
+                    "small",
+                ),
             ],
             styles,
             width,
         ),
         Paragraph(f"Consent text (version {escape(details.consent_text_version)})", styles["h2"]),
-        Paragraph(escape(details.consent_text), styles["body"]),
+        Paragraph(paragraph_markup(details.consent_text), styles["body"]),
         Paragraph("Audit trail", styles["h2"]),
         _events_table(events, styles, width, tz_name),
         Spacer(1, 12),

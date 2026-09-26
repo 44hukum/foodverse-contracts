@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import unicodedata
 from dataclasses import replace
 from datetime import UTC, datetime
 from io import BytesIO
@@ -41,7 +42,24 @@ def _reader(signed: SignedPdf) -> PdfReader:
 
 
 def _text(reader: PdfReader, index: int) -> str:
-    return " ".join(reader.pages[index].extract_text().split())
+    # NFKC folds the ligatures HarfBuzz shaping produces ("fi" -> "fi").
+    return unicodedata.normalize("NFKC", " ".join(reader.pages[index].extract_text().split()))
+
+
+def _text_by_font(reader: PdfReader, index: int) -> dict[str, str]:
+    """Text drawn on the page, keyed by the base font name that drew it."""
+    drawn: dict[str, list[str]] = {}
+
+    def visit(text: str, _cm: object, _tm: object, font: dict[str, object], _size: float) -> None:
+        if text.strip():
+            drawn.setdefault(str(font.get("/BaseFont", "")), []).append(text)
+
+    reader.pages[index].extract_text(visitor_text=visit)
+    return {font: "".join(parts) for font, parts in drawn.items()}
+
+
+def _fonts_matching(by_font: dict[str, str], name: str) -> str:
+    return "".join(text for font, text in by_font.items() if name in font)
 
 
 @pytest.mark.parametrize(
@@ -406,6 +424,56 @@ def test_signature_png_bytes_are_not_embedded_verbatim(
     """The image is decoded and re-encoded (SPEC.md §7), never copied through."""
     signed = _sign(one_page_pdf, signature_png, certificate, events)
     assert signature_png not in signed.pdf_bytes
+
+
+def test_devanagari_typed_name_renders_with_devanagari_glyphs(
+    one_page_pdf: bytes,
+    signature_png: bytes,
+    certificate: CertificateDetails,
+    events: list[AuditEvent],
+) -> None:
+    typed = "\u0938\u0940\u0924\u093e \u0936\u0930\u094d\u092e\u093e"  # सीता शर्मा
+    named = replace(certificate, signer_name=typed, title="\u0939\u094b\u091f\u0932 onboarding")
+    signed = sign_pdf(one_page_pdf, signature_png, typed, events, named)
+    reader = _reader(signed)
+    for page in (0, 1):
+        by_font = _text_by_font(reader, page)
+        devanagari = _fonts_matching(by_font, "NotoSansDevanagari")
+        latin = _fonts_matching(by_font, "NotoSans")
+        # every Devanagari letter of the name was drawn from the Devanagari font ...
+        for char in "\u0938\u0940\u0924\u093e\u0936\u092e":
+            assert char in devanagari, (
+                f"{char!r} not drawn with Noto Sans Devanagari on page {page}"
+            )
+        # ... and no Devanagari was sent to a font that cannot draw it
+        assert not any("\u0900" <= c <= "\u097f" for c in latin.replace(devanagari, ""))
+        assert "\ufffd" not in devanagari
+    assert "Signed electronically by" in _fonts_matching(_text_by_font(reader, 0), "NotoSans-Bold")
+    assert "Signature Certificate" in _text(reader, 1)
+
+
+def test_mixed_script_name_switches_fonts_per_run(
+    one_page_pdf: bytes,
+    signature_png: bytes,
+    certificate: CertificateDetails,
+    events: list[AuditEvent],
+) -> None:
+    sharma = "\u0936\u0930\u094d\u092e\u093e"  # शर्मा
+    typed = f"Sita {sharma} Sharma"
+    signed = sign_pdf(one_page_pdf, signature_png, typed, events, certificate)
+    reader = _reader(signed)
+    # Signature block: bold faces of both fonts, Latin parts in Noto Sans Bold.
+    block = _text_by_font(reader, 0)
+    assert "Signed electronically by Sita " in _fonts_matching(block, "NotoSans-Bold")
+    assert "Sharma" in _fonts_matching(block, "NotoSans-Bold")
+    for char in "\u0936\u092e\u093e":
+        assert char in _fonts_matching(block, "NotoSansDevanagari-Bold")
+    # Certificate: regular faces, same split.
+    cert = _text_by_font(reader, 1)
+    assert "Sita " in _fonts_matching(cert, "NotoSans")
+    for char in "\u0936\u092e\u093e":
+        assert char in _fonts_matching(cert, "NotoSansDevanagari")
+    assert "Sita" in _text(reader, 0) and "Sharma" in _text(reader, 0)
 
 
 def test_small_page_still_gets_a_block(
