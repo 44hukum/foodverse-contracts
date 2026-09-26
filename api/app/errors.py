@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import secrets
 from typing import Any
 
@@ -63,6 +64,35 @@ def unauthorized() -> ApiError:
 
 def invalid_state(message: str, details: dict[str, Any]) -> ApiError:
     return ApiError(409, ErrorCode.invalid_state, message, details)
+
+
+def rate_limited(retry_after: int) -> ApiError:
+    return ApiError(
+        429,
+        ErrorCode.rate_limited,
+        "Too many requests. Try again shortly.",
+        headers={"Retry-After": str(retry_after)},
+    )
+
+
+def internal_error(reason: str) -> ApiError:
+    """A 500 with a reference id; ``reason`` is logged, never sent to the client."""
+    request_id = secrets.token_hex(4)
+    log.error("internal error request_id=%s reason=%s", request_id, reason)
+    return ApiError(
+        500,
+        ErrorCode.internal_error,
+        f"Something went wrong. Reference id {request_id}.",
+        {"request_id": request_id},
+    )
+
+
+# Signing tokens travel in the public URL path (rule 6): never let them into a log line.
+_TOKEN_PATH_RE = re.compile(r"(/public/sign/)[^/?#]+")
+
+
+def redact_path(path: str) -> str:
+    return _TOKEN_PATH_RE.sub(r"\1[redacted]", path)
 
 
 _STATUS_TO_CODE: dict[int, ErrorCode] = {
@@ -132,7 +162,9 @@ def install_exception_handlers(app: FastAPI) -> None:
     async def _unhandled(request: Request, exc: Exception) -> JSONResponse:
         request_id = secrets.token_hex(4)
         # Never log request or response bodies (rule 6); the id is enough to correlate.
-        log.exception("unhandled error request_id=%s path=%s", request_id, request.url.path)
+        log.exception(
+            "unhandled error request_id=%s path=%s", request_id, redact_path(request.url.path)
+        )
         return error_response(
             500,
             ErrorCode.internal_error,

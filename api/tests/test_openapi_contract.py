@@ -17,6 +17,9 @@ IMPLEMENTED = {
     "getContract",
     "cancelContract",
     "getContractDownloadUrl",
+    "sendContractLink",
+    "getContractByToken",
+    "submitSignature",
 }
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ipaddress
 from typing import Annotated
 
 from fastapi import Depends, Request
@@ -36,13 +37,23 @@ def get_rate_limiter(request: Request) -> RateLimiter:
     return limiter
 
 
+def _valid_ip(value: str | None) -> str | None:
+    """Only a syntactically valid address reaches an ``inet`` column; junk becomes None."""
+    if not value:
+        return None
+    try:
+        return str(ipaddress.ip_address(value))
+    except ValueError:
+        return None
+
+
 def client_ip(request: Request) -> str | None:
     forwarded = request.headers.get("x-forwarded-for")
     if forwarded:
-        first = forwarded.split(",")[0].strip()
+        first = _valid_ip(forwarded.split(",")[0].strip())
         if first:
             return first
-    return request.client.host if request.client else None
+    return _valid_ip(request.client.host if request.client else None)
 
 
 def get_client_info(request: Request) -> ClientInfo:

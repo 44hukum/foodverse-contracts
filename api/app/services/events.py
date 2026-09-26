@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -59,11 +60,13 @@ async def record_event(
     actor_id: str | None,
     metadata: dict[str, Any] | None = None,
     client: ClientInfo | None = None,
+    occurred_at: datetime | None = None,
 ) -> ContractEvent:
     """Insert one event (and its PII side row) into the current transaction.
 
     The caller commits; the event must land in the same transaction as the
-    status change it describes (rule 8).
+    status change it describes (rule 8). ``occurred_at`` defaults to now; pass
+    it when the event time must equal a timestamp stored elsewhere (signing).
     """
     row = ContractEvent(
         contract_id=contract_id,
@@ -72,6 +75,8 @@ async def record_event(
         actor_id=actor_id,
         metadata_=check_metadata(dict(metadata or {})),
     )
+    if occurred_at is not None:
+        row.occurred_at = occurred_at
     session.add(row)
     await session.flush()
     if client and (client.ip or client.user_agent):

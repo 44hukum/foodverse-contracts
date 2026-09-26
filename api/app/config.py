@@ -96,6 +96,14 @@ class Settings(BaseSettings):
         # SPEC.md §7: minimum 12. Configuration may raise it, never lower it.
         return max(value, 12)
 
+    @field_validator("signing_link_ttl_days")
+    @classmethod
+    def _link_ttl_in_bounds(cls, value: int) -> int:
+        # SPEC.md §7: links live 1..30 days; the default must be a legal per-send value.
+        if not 1 <= value <= 30:
+            raise ValueError("SIGNING_LINK_TTL_DAYS must be between 1 and 30")
+        return value
+
     @property
     def cors_origins(self) -> list[str]:
         return [o.strip() for o in self.cors_allowed_origins.split(",") if o.strip()]

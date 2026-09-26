@@ -251,9 +251,9 @@ added later without a migration of historic data.
 | `contract_id`          | uuid FK, unique | Unique in v1 (one signer per contract).                      |
 | `name`                 | text null       | As entered by the admin. Null after anonymization.           |
 | `email`                | text null       | As entered by the admin. Null after anonymization.           |
-| `token_hash`           | char(64) null   | SHA-256 hex of the current signing token. Null when no live link. |
+| `token_hash`           | char(64) null   | SHA-256 hex of the most recent signing token. Null until the first send. Kept after signing and cancelling (with `token_invalidated_at` set) so a used or cancelled link answers `410` rather than `404`; overwritten on re-send so the old link becomes indistinguishable from an unknown token. |
 | `token_created_at`     | timestamptz null|                                                              |
-| `token_invalidated_at` | timestamptz null| Set on sign, cancel, or re-send.                             |
+| `token_invalidated_at` | timestamptz null| Set on sign and cancel; cleared on re-send (the new token is live). A link is live only when `token_hash` is set, this is null, and `contracts.expires_at` is in the future. |
 | `typed_name`           | text null       | Name typed by the signer at signing.                         |
 | `signature_image_key`  | text null       | Object key of the drawn signature PNG.                       |
 | `consent_given_at`     | timestamptz null|                                                              |
@@ -396,9 +396,13 @@ contracts/{contract_id}/signature.png
   stamping to strip any embedded payload, maximum 500 KB, maximum
   2000×1000 px.
 - **Public endpoints.** Rate limited per IP and per token (60 requests per
-  minute per IP, 10 signature attempts per token). CORS restricted to the
-  web app origin. Responses for unknown tokens are indistinguishable from
-  rotated tokens.
+  minute per IP across both endpoints, 10 signature attempts per token per
+  minute, counted before the body is validated). Limiter keys use
+  `sha256(token)`, never the token. CORS restricted to the web app origin.
+  Responses for unknown tokens are indistinguishable from rotated tokens.
+  The token travels in the URL path, so the API's own error logging redacts
+  it and the deployment must not keep raw access logs of `/public/sign/`
+  paths (see `docs/runbooks/signing-links.md`).
 - **Secrets.** All configuration through environment variables (see
   `.env.example`). No secrets in the repository, the OpenAPI file, or tests.
 - **Transport.** HTTPS only in production. HSTS on the web app. SMTP uses

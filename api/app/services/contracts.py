@@ -322,10 +322,16 @@ async def cancel_contract(
         raise invalid_state(
             "Contract cannot be cancelled from its current status.", {"status": from_status}
         )
+    # The hash stays so the cancelled link answers 410 contract_cancelled rather than
+    # 404 (SPEC.md §4); token_invalidated_at is what makes it dead.
     await session.execute(
         update(Signer)
-        .where(Signer.contract_id == contract_id, Signer.token_hash.is_not(None))
-        .values(token_hash=None, token_invalidated_at=now, updated_at=now)
+        .where(
+            Signer.contract_id == contract_id,
+            Signer.token_hash.is_not(None),
+            Signer.token_invalidated_at.is_(None),
+        )
+        .values(token_invalidated_at=now, updated_at=now)
     )
     metadata: dict[str, object] = {
         "from_status": from_status,
@@ -346,7 +352,7 @@ async def cancel_contract(
     return await get_contract(session, contract_id)
 
 
-def _filename(title: str, variant: PdfVariant) -> str:
+def download_filename(title: str, variant: PdfVariant) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:80] or "contract"
     return f"{slug}-{variant.value}.pdf"
 
@@ -373,7 +379,7 @@ async def download_link(
     else:
         key, sha256 = contract.original_pdf_key, contract.original_pdf_sha256
     ttl = settings.download_url_ttl_seconds
-    filename = _filename(contract.title, variant)
+    filename = download_filename(contract.title, variant)
     url = storage.signed_download_url(key, ttl, filename)
     expires_at = datetime.now(UTC) + timedelta(seconds=ttl)
     await record_event(
