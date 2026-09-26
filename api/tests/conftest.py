@@ -23,6 +23,10 @@ API_DIR = Path(__file__).resolve().parents[1]
 _env_file = REPO_ROOT / ".env"
 if _env_file.exists():
     for key, value in dotenv_values(_env_file).items():
+        # python-dotenv reads `KEY=    # comment` as the comment text where the
+        # shell reads an empty value; treat such lines as empty, like `source` does.
+        if value is not None and value.startswith("#"):
+            value = ""
         if value is not None and key not in os.environ:
             os.environ[key] = value
 os.environ.setdefault(
