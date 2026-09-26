@@ -1,0 +1,895 @@
+openapi: 3.1.0
+info:
+  title: Foodverse Contract Signing API
+  version: 1.0.0
+  summary: Send onboarding contracts to hotels and restaurants and collect e-signatures.
+  description: |
+    HTTP contract for Contract Signing v1 (FVR-5). This file is the source of
+    truth for request and response shapes. See SPEC.md for behaviour, status
+    transitions, and security requirements.
+
+    Two groups of endpoints:
+
+    * **Admin** (`/api/v1/admin`): authenticated Foodverse staff. Bearer token.
+    * **Public** (`/api/v1/public`): unauthenticated signer endpoints keyed by
+      an unguessable signing token in the path. Rate limited.
+
+    All timestamps are RFC 3339 in UTC. All ids are UUIDv4. Error bodies always
+    use the `Error` schema.
+
+servers:
+  - url: http://localhost:8000/api/v1
+    description: Local development
+  - url: https://contracts.internal.foodverse.example/api/v1
+    description: Production (placeholder host)
+
+tags:
+  - name: admin-contracts
+    description: Admin management of contracts.
+  - name: public-signing
+    description: Signer-facing endpoints reached through the emailed link.
+
+security: []
+
+paths:
+  # ---------------------------------------------------------------- admin ---
+  /admin/contracts:
+    post:
+      operationId: createContract
+      tags: [admin-contracts]
+      summary: Create a contract (upload PDF and add signer)
+      description: |
+        Stores the PDF, computes its SHA-256, creates the contract in status
+        `draft` with one signer, and writes a `contract.created` event. Does
+        not send anything.
+      security:
+        - adminBearer: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/CreateContractRequest'
+            encoding:
+              file:
+                contentType: application/pdf
+      responses:
+        '201':
+          description: Contract created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractDetail'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+    get:
+      operationId: listContracts
+      tags: [admin-contracts]
+      summary: List contracts
+      description: Cursor-paginated, newest first. Optional status filter.
+      security:
+        - adminBearer: []
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Return only contracts in these statuses. Repeat the parameter to pass several.
+          schema:
+            type: array
+            items:
+              $ref: '#/components/schemas/ContractStatus'
+          style: form
+          explode: true
+        - name: q
+          in: query
+          required: false
+          description: Case-insensitive substring match on title, signer name, or signer email.
+          schema:
+            type: string
+            maxLength: 200
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 25
+        - name: cursor
+          in: query
+          required: false
+          description: Opaque cursor from a previous response's `next_cursor`.
+          schema:
+            type: string
+      responses:
+        '200':
+          description: A page of contracts.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /admin/contracts/{contract_id}:
+    parameters:
+      - $ref: '#/components/parameters/ContractId'
+    get:
+      operationId: getContract
+      tags: [admin-contracts]
+      summary: Get a contract with its signer and audit events
+      security:
+        - adminBearer: []
+      responses:
+        '200':
+          description: Contract detail.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /admin/contracts/{contract_id}/send:
+    parameters:
+      - $ref: '#/components/parameters/ContractId'
+    post:
+      operationId: sendContractLink
+      tags: [admin-contracts]
+      summary: Send (or re-send) the signing link
+      description: |
+        Generates a new signing token, invalidates any previous one, sets
+        `expires_at`, emails the signer, and moves the contract to `sent`.
+
+        Allowed from `draft`, `sent`, `viewed`, and `expired`. From `sent` or
+        `viewed` this is a re-send and writes `link.resent` instead of
+        `contract.sent`. The raw token is never returned to the admin.
+      security:
+        - adminBearer: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SendContractRequest'
+      responses:
+        '200':
+          description: Link sent. Returns the updated contract.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/InvalidState'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /admin/contracts/{contract_id}/cancel:
+    parameters:
+      - $ref: '#/components/parameters/ContractId'
+    post:
+      operationId: cancelContract
+      tags: [admin-contracts]
+      summary: Cancel a contract
+      description: |
+        Allowed from `draft`, `sent`, and `viewed`. Invalidates the signing
+        token and writes `contract.cancelled`. Terminal.
+      security:
+        - adminBearer: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CancelContractRequest'
+      responses:
+        '200':
+          description: Contract cancelled.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContractDetail'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/InvalidState'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /admin/contracts/{contract_id}/download:
+    parameters:
+      - $ref: '#/components/parameters/ContractId'
+    get:
+      operationId: getContractDownloadUrl
+      tags: [admin-contracts]
+      summary: Get a short-lived signed URL for the original or signed PDF
+      description: |
+        The API never streams PDF bytes. It returns a pre-signed object storage
+        URL valid for `DOWNLOAD_URL_TTL_SECONDS` (default 300) and writes a
+        `pdf.downloaded` event. `variant=signed` is only available once the
+        contract is `signed`.
+      security:
+        - adminBearer: []
+      parameters:
+        - name: variant
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/PdfVariant'
+      responses:
+        '200':
+          description: Signed download URL.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DownloadLink'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Requested `signed` variant but the contract is not signed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              example:
+                error:
+                  code: invalid_state
+                  message: Contract is not signed; no signed PDF exists.
+                  details:
+                    status: viewed
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  # --------------------------------------------------------------- public ---
+  /public/sign/{token}:
+    parameters:
+      - $ref: '#/components/parameters/SigningToken'
+    get:
+      operationId: getContractByToken
+      tags: [public-signing]
+      summary: Load a contract for signing
+      description: |
+        Validates the token and returns what the signer needs to review and
+        sign. Side effects: moves `sent` to `viewed` on first call, writes a
+        `link.viewed` event on every call, and lazily expires the contract if
+        `expires_at` has passed.
+
+        The response is identical for unknown and rotated tokens (`404`).
+      responses:
+        '200':
+          description: Contract is open for signing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicContract'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          $ref: '#/components/responses/LinkGone'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /public/sign/{token}/signature:
+    parameters:
+      - $ref: '#/components/parameters/SigningToken'
+    post:
+      operationId: submitSignature
+      tags: [public-signing]
+      summary: Submit the signature
+      description: |
+        Accepts the typed name, drawn signature (PNG data URL), and consent.
+        Stamps the signature block and certificate page onto the PDF, stores
+        the result, computes its SHA-256, marks the contract `signed`,
+        invalidates the token, and triggers notifications.
+
+        Single use: a second call with the same token returns `410 link_used`.
+        The operation is atomic with respect to status: concurrent submissions
+        result in exactly one `signed` transition.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmitSignatureRequest'
+      responses:
+        '200':
+          description: Signature accepted and PDF finalised.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignatureResult'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '410':
+          $ref: '#/components/responses/LinkGone'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+components:
+  securitySchemes:
+    adminBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        Bearer token issued by the Foodverse internal auth layer. The API
+        derives `admin_id` from it and records it on every audit event.
+
+  parameters:
+    ContractId:
+      name: contract_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    SigningToken:
+      name: token
+      in: path
+      required: true
+      description: |
+        43-character base64url signing token from the emailed link. Never
+        logged. The server compares `sha256(token)` against stored hashes.
+      schema:
+        type: string
+        pattern: '^[A-Za-z0-9_-]{43}$'
+
+  responses:
+    BadRequest:
+      description: Malformed request (bad JSON, missing multipart part, bad query value).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: bad_request
+              message: Request body is not valid JSON.
+    Unauthorized:
+      description: Missing or invalid bearer token.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: unauthorized
+              message: A valid bearer token is required.
+    NotFound:
+      description: |
+        Resource not found. For public endpoints this also covers unknown,
+        malformed, and rotated tokens, deliberately without distinction.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: not_found
+              message: Not found.
+    InvalidState:
+      description: The contract's current status does not allow this action.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: invalid_state
+              message: Contract cannot be cancelled from status 'signed'.
+              details:
+                status: signed
+                allowed_from: [draft, sent, viewed]
+    LinkGone:
+      description: |
+        The token was valid once but can no longer be used. `details.reason`
+        tells the web app which message to show.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            expired:
+              summary: Link expired
+              value:
+                error:
+                  code: link_expired
+                  message: This signing link has expired. Ask the sender for a new one.
+                  details:
+                    expired_at: '2026-10-10T09:00:00Z'
+            used:
+              summary: Already signed
+              value:
+                error:
+                  code: link_used
+                  message: This document has already been signed.
+                  details:
+                    signed_at: '2026-09-28T14:22:10Z'
+            cancelled:
+              summary: Cancelled
+              value:
+                error:
+                  code: contract_cancelled
+                  message: This contract has been cancelled by the sender.
+    PayloadTooLarge:
+      description: Upload or signature image exceeds the size limit.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: payload_too_large
+              message: PDF must be 20 MB or smaller.
+              details:
+                max_bytes: 20971520
+    UnsupportedMediaType:
+      description: Uploaded file is not a PDF (checked by content type and magic bytes).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: unsupported_media_type
+              message: Only PDF files are accepted.
+    ValidationError:
+      description: Request was well-formed but failed field validation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: validation_error
+              message: One or more fields are invalid.
+              details:
+                fields:
+                  - field: signer_email
+                    message: Not a valid email address.
+                  - field: consent
+                    message: Consent must be true.
+    RateLimited:
+      description: Too many requests from this IP or for this token.
+      headers:
+        Retry-After:
+          description: Seconds until the client may retry.
+          schema:
+            type: integer
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: rate_limited
+              message: Too many requests. Try again shortly.
+    InternalError:
+      description: Unexpected server error. No partial state is persisted.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: internal_error
+              message: Something went wrong. Reference id 7f3c1b2e.
+              details:
+                request_id: 7f3c1b2e
+
+  schemas:
+    # ------------------------------------------------------------- enums ---
+    ContractStatus:
+      type: string
+      enum: [draft, sent, viewed, signed, expired, cancelled]
+      description: See SPEC.md §5 for allowed transitions.
+
+    PdfVariant:
+      type: string
+      enum: [original, signed]
+      default: original
+
+    EventType:
+      type: string
+      enum:
+        - contract.created
+        - contract.sent
+        - link.resent
+        - link.viewed
+        - contract.signed
+        - contract.expired
+        - contract.cancelled
+        - pdf.downloaded
+        - notification.sent
+        - notification.failed
+
+    ActorType:
+      type: string
+      enum: [admin, signer, system]
+
+    ErrorCode:
+      type: string
+      enum:
+        - bad_request
+        - unauthorized
+        - not_found
+        - invalid_state
+        - link_expired
+        - link_used
+        - contract_cancelled
+        - payload_too_large
+        - unsupported_media_type
+        - validation_error
+        - rate_limited
+        - internal_error
+
+    # ------------------------------------------------------------- error ---
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              $ref: '#/components/schemas/ErrorCode'
+            message:
+              type: string
+              description: Human-readable, safe to show to the end user.
+            details:
+              type: object
+              additionalProperties: true
+              description: Machine-readable extras. Never contains tokens or PII beyond what the caller already sent.
+
+    # ----------------------------------------------------- admin requests ---
+    CreateContractRequest:
+      type: object
+      required: [file, title, signer_name, signer_email]
+      properties:
+        file:
+          type: string
+          format: binary
+          description: The contract PDF. `application/pdf`, max 20 MB.
+        title:
+          type: string
+          minLength: 1
+          maxLength: 200
+          examples: ['Hotel Aurora — Onboarding Agreement 2026']
+        signer_name:
+          type: string
+          minLength: 1
+          maxLength: 200
+          examples: ['Maria Petrova']
+        signer_email:
+          type: string
+          format: email
+          maxLength: 320
+          examples: ['maria@hotelaurora.example']
+
+    SendContractRequest:
+      type: object
+      properties:
+        expires_in_days:
+          type: integer
+          minimum: 1
+          maximum: 30
+          description: Link lifetime. Defaults to `SIGNING_LINK_TTL_DAYS` (14).
+        message:
+          type: string
+          maxLength: 1000
+          description: Optional personal note included in the email to the signer.
+
+    CancelContractRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          maxLength: 500
+          description: Stored in the `contract.cancelled` event metadata.
+
+    # ---------------------------------------------------- admin responses ---
+    Signer:
+      type: object
+      required: [id, name, email, has_active_link]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+        has_active_link:
+          type: boolean
+          description: True when a non-invalidated, non-expired token exists.
+        token_created_at:
+          type: [string, 'null']
+          format: date-time
+        typed_name:
+          type: [string, 'null']
+          description: Name typed at signing. Null until signed.
+        consent_given_at:
+          type: [string, 'null']
+          format: date-time
+        signed_ip:
+          type: [string, 'null']
+          description: IPv4 or IPv6 address of the signer at signing.
+        signed_user_agent:
+          type: [string, 'null']
+
+    ContractSummary:
+      type: object
+      required:
+        - id
+        - title
+        - status
+        - created_by
+        - signer_name
+        - signer_email
+        - original_pdf_sha256
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        status:
+          $ref: '#/components/schemas/ContractStatus'
+        created_by:
+          type: string
+          description: Admin id from the auth layer.
+        signer_name:
+          type: string
+        signer_email:
+          type: string
+          format: email
+        original_pdf_sha256:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        final_pdf_sha256:
+          type: [string, 'null']
+          pattern: '^[a-f0-9]{64}$'
+          description: Null until signed.
+        sent_at:
+          type: [string, 'null']
+          format: date-time
+        first_viewed_at:
+          type: [string, 'null']
+          format: date-time
+        signed_at:
+          type: [string, 'null']
+          format: date-time
+        expires_at:
+          type: [string, 'null']
+          format: date-time
+        cancelled_at:
+          type: [string, 'null']
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    ContractEvent:
+      type: object
+      required: [id, contract_id, event_type, actor_type, occurred_at, metadata]
+      properties:
+        id:
+          type: integer
+          format: int64
+          description: Monotonic per database; orders events within a contract.
+        contract_id:
+          type: string
+          format: uuid
+        event_type:
+          $ref: '#/components/schemas/EventType'
+        actor_type:
+          $ref: '#/components/schemas/ActorType'
+        actor_id:
+          type: [string, 'null']
+          description: Admin id or signer id. Null for system events.
+        occurred_at:
+          type: string
+          format: date-time
+        ip:
+          type: [string, 'null']
+        user_agent:
+          type: [string, 'null']
+        metadata:
+          type: object
+          additionalProperties: true
+          description: Event-specific payload, e.g. `from_status` / `to_status`. Never contains the raw token.
+
+    ContractDetail:
+      allOf:
+        - $ref: '#/components/schemas/ContractSummary'
+        - type: object
+          required: [signer, original_pdf_size, events]
+          properties:
+            original_pdf_size:
+              type: integer
+              description: Bytes.
+            signer:
+              $ref: '#/components/schemas/Signer'
+            events:
+              type: array
+              description: Full audit log, ascending by `id`.
+              items:
+                $ref: '#/components/schemas/ContractEvent'
+
+    ContractList:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContractSummary'
+        next_cursor:
+          type: [string, 'null']
+          description: Pass as `cursor` to fetch the next page. Null on the last page.
+
+    DownloadLink:
+      type: object
+      required: [variant, url, expires_at, sha256, filename]
+      properties:
+        variant:
+          $ref: '#/components/schemas/PdfVariant'
+        url:
+          type: string
+          format: uri
+          description: Pre-signed object storage URL. Do not store or log.
+        expires_at:
+          type: string
+          format: date-time
+        sha256:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+          description: Hash of the file the URL points at, so the caller can verify.
+        filename:
+          type: string
+          examples: ['hotel-aurora-onboarding-2026-signed.pdf']
+
+    # ---------------------------------------------------- public schemas ---
+    PublicContract:
+      type: object
+      required: [contract_id, title, status, signer, expires_at, pdf, consent_text]
+      properties:
+        contract_id:
+          type: string
+          format: uuid
+        title:
+          type: string
+        status:
+          $ref: '#/components/schemas/ContractStatus'
+          description: Always `viewed` in a 200 response (the GET itself moves `sent` to `viewed`).
+        signer:
+          type: object
+          required: [name, email]
+          properties:
+            name:
+              type: string
+              description: Prefilled into the typed-name field; the signer may edit it.
+            email:
+              type: string
+              format: email
+        sent_by:
+          type: string
+          description: Display name of the sending organisation, e.g. "Foodverse". Never the admin's personal identity.
+        expires_at:
+          type: string
+          format: date-time
+        pdf:
+          type: object
+          required: [url, expires_at, sha256, size]
+          properties:
+            url:
+              type: string
+              format: uri
+              description: Short-lived pre-signed URL to the original PDF.
+            expires_at:
+              type: string
+              format: date-time
+            sha256:
+              type: string
+              pattern: '^[a-f0-9]{64}$'
+            size:
+              type: integer
+              description: Bytes.
+        consent_text:
+          type: string
+          description: Exact consent wording the UI must show next to the checkbox. Server-defined so legal wording is versioned in one place.
+
+    SubmitSignatureRequest:
+      type: object
+      required: [typed_name, signature_image, consent]
+      properties:
+        typed_name:
+          type: string
+          minLength: 2
+          maxLength: 200
+          description: Full legal name as typed by the signer.
+        signature_image:
+          type: string
+          description: |
+            Drawn signature as a PNG data URL (`data:image/png;base64,...`).
+            Max 500 KB decoded, max 2000×1000 px, must decode as PNG.
+          pattern: '^data:image/png;base64,[A-Za-z0-9+/=]+$'
+          maxLength: 700000
+        consent:
+          type: boolean
+          const: true
+          description: Must be `true`. The UI shows `consent_text` from the GET response.
+        consent_text_version:
+          type: string
+          description: Optional. Echo of the consent wording version shown, recorded in the audit event.
+
+    SignatureResult:
+      type: object
+      required: [contract_id, status, signed_at, final_pdf_sha256, download]
+      properties:
+        contract_id:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/ContractStatus'
+          description: Always `signed`.
+        signed_at:
+          type: string
+          format: date-time
+        final_pdf_sha256:
+          type: string
+          pattern: '^[a-f0-9]{64}$'
+        download:
+          $ref: '#/components/schemas/DownloadLink'
+          description: Short-lived link to the signed PDF for immediate download. A copy is also emailed.
