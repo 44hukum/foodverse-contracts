@@ -1,16 +1,20 @@
 # Contract Signing v1 — Specification
 
 Ticket: FVR-5
-Status: Draft for review
+Status: Draft for review (decisions 1–9 accepted 2026-09-26; see §12)
 Owner: Foodverse platform team
 
 ## 1. Goal
 
-An internal Foodverse tool that lets an admin send an onboarding contract (a
+A standalone Foodverse tool that lets an admin send an onboarding contract (a
 PDF) to a single signer at a hotel or restaurant, lets that signer sign it
 from a unique link without creating an account, and produces a tamper-evident
 signed PDF with a full audit trail of everything that happened to the
 contract.
+
+The project is independent of other Foodverse services: it has its own admin
+accounts, its own database, its own object storage bucket, and talks to the
+outside world only through SMTP.
 
 v1 is deliberately small. It must be correct, auditable, and boring before it
 is convenient.
@@ -28,67 +32,86 @@ that forecloses them either.
   admin). v1 stamps a signature block and a certificate page only.
 - Signer accounts, signer login, or signer dashboards.
 - Counter-signature by Foodverse.
-- Qualified / advanced electronic signatures under eIDAS or equivalent. v1
-  produces a simple electronic signature with evidence.
+- Digital signatures with certificates or a licensed Certifying Authority
+  under Nepal's Electronic Transactions Act 2063. v1 produces a simple
+  electronic signature with evidence. Legal review of its standing is an
+  open question (§12).
 - Webhooks or public API for third parties.
 - Bulk send.
+- Admin self-service signup, password reset by email, SSO. Admins are
+  created and reset from the command line by an operator.
+- Automatic deletion of signed contracts. v1 computes a retention date but
+  never deletes signed material.
 
 ## 3. Actors
 
-- **Admin**: an authenticated Foodverse employee using the internal web app.
-  Admin authentication is provided by the internal auth layer and is
-  represented in the API as a bearer token. Every admin request carries an
-  `admin_id` that is recorded in the audit log.
+- **Admin**: a Foodverse employee with a row in the `admins` table. Logs in
+  with email and password and receives a JWT whose `sub` is the admin id.
+  Every admin action records that id in the audit log.
+- **Operator**: whoever has shell access to the deployment. Creates the
+  first admin and resets passwords with a CLI command. Not an API actor.
 - **Signer**: the hotel or restaurant representative. Unauthenticated. Their
-  only credential is the unguessable link they received by email.
-- **System**: background jobs (expiry sweep) and the API itself when it acts
-  on its own (e.g. hashing the final PDF).
+  only credential is the unguessable link they received.
+- **System**: background jobs (expiry sweep, retention job) and the API
+  itself when it acts on its own (e.g. hashing the final PDF).
 
 ## 4. User flow
 
-1. **Admin creates a contract.** In the web app the admin uploads a PDF, gives
-   the contract a title, and enters the signer's name and email. The backend
-   stores the PDF in object storage, computes its SHA-256, creates a
-   `contracts` row in status `draft` and a `signers` row, and writes a
-   `contract.created` event.
-2. **Admin sends the link.** The admin clicks "Send". The backend generates a
-   signing token, stores only its hash, sets `expires_at`, emails the signer
-   a link of the form `{WEB_BASE_URL}/sign/{token}`, moves the contract to
-   `sent`, and writes `contract.sent`.
-3. **Signer opens the link.** The web app loads the public contract endpoint
-   with the token. The backend validates the token, returns contract metadata
-   plus a short-lived signed URL to the original PDF, moves the contract from
-   `sent` to `viewed` on first successful load, and writes `link.viewed`
-   (every load, not just the first).
-4. **Signer reviews the PDF** in the browser.
-5. **Signer signs.** The signer types their full name, draws a signature on a
-   canvas, and ticks a consent checkbox ("I agree to sign this document
-   electronically and I understand this is legally binding"). The web app
-   submits all three to the public signature endpoint.
-6. **Backend stamps the PDF.** In one transaction-like unit of work the
-   backend:
+1. **Admin logs in.** `POST /admin/auth/login` with email and password.
+   The backend verifies the argon2id hash and returns a JWT (default
+   lifetime 8 hours). The web app stores it in memory and sends it as a
+   bearer token.
+2. **Admin creates a contract.** The admin uploads a PDF, gives the contract
+   a title, enters the signer's name and email, and optionally the contract
+   term end date (used for retention, §9). The backend stores the PDF in
+   object storage, computes its SHA-256, creates a `contracts` row in status
+   `draft` and a `signers` row, and writes a `contract.created` event.
+3. **Admin sends the link.** The admin clicks "Send" and chooses whether to
+   also email the signer (default: yes). The backend generates a signing
+   token, stores only its hash, sets `expires_at`, moves the contract to
+   `sent`, writes `contract.sent`, and **returns the full signing link in
+   the response** so the admin can copy it into WhatsApp, Viber, or a phone
+   call. If `send_email` is true it also emails the link to the signer. The
+   link is shown once; it is not retrievable later, only regenerated by
+   re-sending.
+4. **Signer opens the link.** The web app loads the public contract endpoint
+   with the token. The backend validates the token, returns contract
+   metadata plus a short-lived signed URL to the original PDF, moves the
+   contract from `sent` to `viewed` on first successful load, and writes
+   `link.viewed` (every load, not just the first).
+5. **Signer reviews the PDF** in the browser.
+6. **Signer signs.** The signer types their full name, draws a signature on a
+   canvas, and ticks the consent checkbox showing the server-provided
+   consent text (§8). The web app submits all three to the public signature
+   endpoint.
+7. **Backend stamps the PDF.** In one unit of work the backend:
    1. Re-validates the token and that the contract is `sent` or `viewed`.
    2. Downloads the original PDF from storage and verifies its SHA-256
       matches the stored value.
-   3. Appends a signature block (drawn signature image, typed name, UTC
+   3. Appends a signature block (drawn signature image, typed name,
       timestamp) to the last page, or to a new page if there is no room.
-   4. Appends a **certificate page** containing: contract id, title, signer
-      name and email, signing timestamp (UTC), signer IP, signer user agent,
-      the SHA-256 of the original PDF, the token's creation and expiry times,
-      and a note that the audit log is held by Foodverse.
+   4. Appends a **certificate page** (§8) with contract id, title, signer
+      name and email, signing timestamp in both Asia/Kathmandu and UTC,
+      signer IP, signer user agent, the SHA-256 of the original PDF, the
+      token's creation and expiry times, the consent text version, and a
+      note that the full audit log is held by Foodverse.
    5. Computes the SHA-256 of the resulting PDF and stores the PDF under a
       new object key.
    6. Updates the contract to `signed` with `signed_at`, `final_pdf_key`,
-      `final_pdf_sha256`, and records the signature data on the signer.
+      `final_pdf_sha256`, `retain_until`, and records the signature data on
+      the signer.
    7. Invalidates the token (single use).
    8. Writes `contract.signed`.
    If any step fails the contract stays in its previous status and nothing
    is stored; the signer sees an error and can retry with the same link.
-7. **Notifications.** The backend emails the signer a copy of the signed PDF
-   (attached, plus the SHA-256 printed in the email body) and emails the
-   admin who created the contract that it was signed. Email failures are
-   logged as events and do not roll back the signature.
-8. **Admin downloads.** The admin can request a download link for the
+8. **Completion notifications.** The backend emails both the signer and the
+   admin who created the contract. Each email carries the signed PDF as an
+   attachment and prints its SHA-256. If the PDF is larger than
+   `EMAIL_MAX_ATTACHMENT_BYTES` (default 10 MB) the email instead carries a
+   pre-signed download link valid for `EMAIL_DOWNLOAD_LINK_TTL_HOURS`
+   (default 72). The admin email also links to the admin contract page.
+   Email failures are logged as events and do not roll back the signature.
+9. **Admin downloads.** The admin can request a download link for the
    original or the signed PDF at any time. The backend returns a short-lived
    signed URL and writes `pdf.downloaded`.
 
@@ -105,11 +128,19 @@ that forecloses them either.
   whether the token never existed or was rotated, to avoid leaking
   information.
 - Admin re-sends while `sent` or `viewed`: a new token is issued, the old one
-  is invalidated immediately, `expires_at` is reset, and `link.resent` is
-  written. Status is set back to `sent`.
+  is invalidated immediately, `expires_at` is reset, `link.resent` is
+  written, and the new link is returned. Status is set back to `sent`.
+- Admin sends with `send_email: false`: no email; the `contract.sent` or
+  `link.resent` event records `"delivery": "manual"`.
 - Admin cancels while `draft`, `sent`, or `viewed`: status becomes
   `cancelled`, the token is invalidated, `contract.cancelled` is written.
   `signed` and `expired` contracts cannot be cancelled (`409 invalid_state`).
+- Admin tries to send a contract whose signer data has been anonymized by
+  the retention job: `409 invalid_state` with `details.reason:
+  "anonymized"`.
+- Login with wrong credentials, unknown email, or inactive admin:
+  `401 invalid_credentials`, identical message for all three. Login is rate
+  limited per IP.
 
 ## 5. Statuses and transitions
 
@@ -136,7 +167,7 @@ viewed    -> signed      (signer: submit)
 viewed    -> sent        (admin: re-send, token rotated)
 viewed    -> expired     (system: expiry)
 viewed    -> cancelled   (admin: cancel)
-expired   -> sent        (admin: re-send)
+expired   -> sent        (admin: re-send, unless anonymized)
 ```
 
 Any other transition is rejected with `409 invalid_state`. Status changes are
@@ -147,11 +178,39 @@ Expiry is evaluated both lazily (on any public access) and by a periodic
 sweep job that runs at least every 15 minutes so that the admin list is
 accurate without waiting for the signer to click.
 
+Anonymization (§9) is not a status. It is a flag (`anonymized_at`) on
+`draft`, `expired`, and `cancelled` contracts that blocks re-sending.
+
 ## 6. Data model
 
-All tables use UUIDv4 primary keys, `timestamptz` timestamps in UTC, and are
-managed by Alembic migrations. Emails are stored as entered but compared
-case-insensitively.
+All tables use UUIDv4 primary keys unless noted, `timestamptz` timestamps in
+UTC, and are managed by Alembic migrations. Emails are stored as entered but
+compared case-insensitively.
+
+### `admins`
+
+| Column          | Type          | Notes                                                    |
+|-----------------|---------------|----------------------------------------------------------|
+| `id`            | uuid PK       | Becomes the JWT `sub`.                                   |
+| `email`         | text unique   | Unique index on `lower(email)`.                          |
+| `name`          | text          | Display name.                                            |
+| `password_hash` | text          | argon2id, via `argon2-cffi` with library defaults or stronger. |
+| `is_active`     | boolean       | Inactive admins cannot log in; existing JWTs are still honoured until expiry. |
+| `last_login_at` | timestamptz null |                                                       |
+| `created_at`    | timestamptz   |                                                          |
+| `updated_at`    | timestamptz   |                                                          |
+
+Admins are created and passwords reset only through the CLI:
+
+```
+uv run python -m app.cli create-admin --email ops@example.com --name "Ops"
+uv run python -m app.cli reset-admin-password --email ops@example.com
+uv run python -m app.cli deactivate-admin --email ops@example.com
+```
+
+The password is always read interactively from the terminal, never from an
+argument or environment variable. There is no signup endpoint and no
+password reset endpoint.
 
 ### `contracts`
 
@@ -160,7 +219,8 @@ case-insensitively.
 | `id`                 | uuid PK       |                                                             |
 | `title`              | text          | 1–200 chars, shown to signer.                               |
 | `status`             | text          | One of the six statuses. Check constraint.                  |
-| `created_by`         | text          | Admin id from the auth layer.                               |
+| `created_by`         | uuid FK admins|                                                             |
+| `term_end_date`      | date null     | Optional, entered by the admin. Drives `retain_until`.      |
 | `original_pdf_key`   | text          | Object key of the uploaded PDF.                             |
 | `original_pdf_sha256`| char(64)      | Hex, computed at upload.                                    |
 | `original_pdf_size`  | integer       | Bytes.                                                      |
@@ -171,6 +231,8 @@ case-insensitively.
 | `signed_at`          | timestamptz null |                                                          |
 | `expires_at`         | timestamptz null | Expiry of the current link.                              |
 | `cancelled_at`       | timestamptz null |                                                          |
+| `retain_until`       | date null     | Set at signing: `(term_end_date or signed_at::date) + 7 years`. Informational in v1. |
+| `anonymized_at`      | timestamptz null | Set by the retention job (§9).                           |
 | `created_at`         | timestamptz   |                                                             |
 | `updated_at`         | timestamptz   |                                                             |
 
@@ -183,14 +245,15 @@ added later without a migration of historic data.
 |------------------------|-----------------|--------------------------------------------------------------|
 | `id`                   | uuid PK         |                                                              |
 | `contract_id`          | uuid FK, unique | Unique in v1 (one signer per contract).                      |
-| `name`                 | text            | As entered by the admin.                                     |
-| `email`                | text            | As entered by the admin.                                     |
+| `name`                 | text null       | As entered by the admin. Null after anonymization.           |
+| `email`                | text null       | As entered by the admin. Null after anonymization.           |
 | `token_hash`           | char(64) null   | SHA-256 hex of the current signing token. Null when no live link. |
 | `token_created_at`     | timestamptz null|                                                              |
 | `token_invalidated_at` | timestamptz null| Set on sign, cancel, or re-send.                             |
 | `typed_name`           | text null       | Name typed by the signer at signing.                         |
 | `signature_image_key`  | text null       | Object key of the drawn signature PNG.                       |
 | `consent_given_at`     | timestamptz null|                                                              |
+| `consent_text_version` | text null       | Version of the consent wording shown, e.g. `v0-draft`.       |
 | `signed_ip`            | inet null       |                                                              |
 | `signed_user_agent`    | text null       |                                                              |
 | `created_at`           | timestamptz     |                                                              |
@@ -208,22 +271,38 @@ The raw token is never stored. Lookup is by `token_hash = sha256(token)`.
 | `actor_type`  | text        | `admin`, `signer`, or `system`.                                        |
 | `actor_id`    | text null   | Admin id for admin actions; signer id for signer actions; null for system. |
 | `occurred_at` | timestamptz | Server time.                                                           |
-| `ip`          | inet null   | Client IP (X-Forwarded-For resolved by the API, first trusted hop).    |
-| `user_agent`  | text null   |                                                                        |
-| `metadata`    | jsonb       | Event-specific payload, e.g. `{"from_status": "sent", "to_status": "viewed"}`. Never contains the raw token or the signature image. |
+| `metadata`    | jsonb       | Event-specific payload, e.g. `{"from_status": "sent", "to_status": "viewed"}`. Never contains the raw token, the signature image, names, emails, IPs, or user agents. |
+
+### `contract_event_pii`
+
+Personal data attached to an event lives beside the event, not in it, so the
+retention job can purge it without ever updating `contract_events`.
+
+| Column        | Type        | Notes                                                          |
+|---------------|-------------|----------------------------------------------------------------|
+| `event_id`    | bigint PK FK contract_events | One-to-one.                                   |
+| `ip`          | inet null   | Client IP (first trusted hop of `X-Forwarded-For`).            |
+| `user_agent`  | text null   |                                                                |
+
+The API always returns an event as one object with `ip` and `user_agent`
+merged in; after anonymization those fields are `null` and the event carries
+no other change. This table is insert-and-delete only: no `UPDATE` grant.
 
 Event types in v1:
 
 `contract.created`, `contract.sent`, `link.resent`, `link.viewed`,
 `contract.signed`, `contract.expired`, `contract.cancelled`,
-`pdf.downloaded`, `notification.sent`, `notification.failed`.
+`pdf.downloaded`, `notification.sent`, `notification.failed`,
+`signer.anonymized`.
 
 Rules:
 
-- Rows are inserted only. The application database role has `INSERT` and
-  `SELECT` on this table and **no** `UPDATE` or `DELETE` grant. A migration
-  also adds a trigger that raises on `UPDATE` or `DELETE` as a second line of
-  defence.
+- `contract_events` rows are inserted only. The application database role
+  has `INSERT` and `SELECT` on this table and **no** `UPDATE` or `DELETE`
+  grant. A migration also adds a trigger that raises on `UPDATE` or `DELETE`
+  as a second line of defence. The same trigger protects
+  `contract_event_pii` from `UPDATE`; `DELETE` there is allowed only to the
+  retention role.
 - Every status change writes exactly one event in the same transaction as
   the status change.
 - Events are returned to admins in `GET /admin/contracts/{id}` ordered by
@@ -241,11 +320,23 @@ contracts/{contract_id}/signature.png
 
 ## 7. Security
 
+- **Admin authentication.** Email + password against `admins`. Passwords
+  are hashed with argon2id. Login returns a JWT signed with HS256 using
+  `JWT_SECRET` (at least 32 random bytes), claims `sub` (admin id), `iat`,
+  `exp` (`ADMIN_JWT_TTL_MINUTES`, default 480), `iss` = `foodverse-contracts`.
+  There is no refresh token and no server-side revocation in v1; the short
+  lifetime is the mitigation. Login is rate limited per IP
+  (`ADMIN_LOGIN_RATE_LIMIT_PER_IP_PER_MINUTE`, default 10) and never
+  distinguishes unknown email from wrong password. Minimum password length
+  12; no other composition rules.
 - **Tokens.** 32 bytes from a CSPRNG (`secrets.token_bytes(32)`), encoded
   base64url without padding (43 characters). Only `sha256(token)` is stored.
-  Tokens never appear in logs, events, or error messages. The public API
-  accepts the token in the path; the web app must not forward it to any
-  third-party script or analytics.
+  The raw token exists in exactly three places: the send response to the
+  admin (once, not persisted, not in list or get), the email to the signer,
+  and the public URL path. Tokens never appear in logs, events, or error
+  messages. The web app must not send the link to any third-party script or
+  analytics, and must show it in a copy box rather than a navigable anchor
+  so it does not enter the admin's browser history.
 - **Expiry.** Every link has `expires_at`, default 14 days after send
   (`SIGNING_LINK_TTL_DAYS`), configurable per send between 1 and 30 days.
   Expired links fail closed.
@@ -259,100 +350,202 @@ contracts/{contract_id}/signature.png
   email, and shown in the admin UI. Anyone holding a copy can verify it
   against the stored hash.
 - **Downloads.** PDFs are never served by the API and never at a stable URL.
-  Every download goes through a pre-signed object storage URL with a TTL of
-  `DOWNLOAD_URL_TTL_SECONDS` (default 300). Each admin download request writes
-  a `pdf.downloaded` event.
+  Every download goes through a pre-signed object storage URL. Interactive
+  downloads use `DOWNLOAD_URL_TTL_SECONDS` (default 300). Links embedded in
+  completion emails, used only when the PDF exceeds the attachment limit,
+  use `EMAIL_DOWNLOAD_LINK_TTL_HOURS` (default 72). Each admin download
+  request writes a `pdf.downloaded` event.
 - **Uploads.** Only `application/pdf`, checked by magic bytes as well as
   content type. Maximum size 20 MB. Rejected files are never written to
   storage.
 - **Signature image.** PNG only, decoded and re-encoded server-side before
   stamping to strip any embedded payload, maximum 500 KB, maximum
   2000×1000 px.
-- **Public endpoints.** Rate limited per IP and per token (e.g. 60 requests
-  per minute per IP, 10 signature attempts per token). No CORS beyond the web
-  app origin. Responses for unknown tokens are indistinguishable from rotated
-  tokens.
-- **Admin endpoints.** Require a valid bearer token from the internal auth
-  layer. All admin actions record `admin_id` in `contract_events`.
+- **Public endpoints.** Rate limited per IP and per token (60 requests per
+  minute per IP, 10 signature attempts per token). CORS restricted to the
+  web app origin. Responses for unknown tokens are indistinguishable from
+  rotated tokens.
 - **Secrets.** All configuration through environment variables (see
   `.env.example`). No secrets in the repository, the OpenAPI file, or tests.
-- **Transport.** HTTPS only. HSTS on the web app.
-- **PII.** Signer name, email, IP, and user agent are personal data. They are
-  needed for the audit trail and are kept for the life of the contract.
-  Deletion or retention policy is an open question (see §10).
+- **Transport.** HTTPS only in production. HSTS on the web app. SMTP uses
+  STARTTLS when `SMTP_USE_TLS=true`.
+- **PII.** Signer name, email, IP, and user agent are personal data under
+  Nepal's Individual Privacy Act 2075 (2018). They are collected for the
+  purpose of evidencing the signature and are retained per §9.
 
-## 8. Notifications
+## 8. Consent text and certificate page
 
-Transactional email only, through the provider configured in `.env`.
+Both texts are **placeholders marked `v0-draft`** pending legal review. The
+version string is served in `PublicContract.consent_text_version`, stored on
+the signer at signing, and printed on the certificate page, so a later
+change of wording is distinguishable in the audit trail.
 
-| Trigger            | To     | Content                                                         |
-|--------------------|--------|-----------------------------------------------------------------|
-| `contract.sent`, `link.resent` | Signer | Title, who sent it, expiry date, the signing link.  |
-| `contract.signed`  | Signer | Confirmation, signed PDF attached, SHA-256 in the body.         |
-| `contract.signed`  | Admin (`created_by`) | Confirmation, link to the admin contract page.    |
+Consent text `v0-draft`:
+
+> I confirm that I am {signer name}, that I have read the document titled
+> "{title}", and that I agree to sign it electronically. I understand that my
+> typed name, drawn signature, IP address, and the time of signing will be
+> recorded and attached to the document as evidence of my agreement.
+> [v0-draft — pending legal review]
+
+Certificate page `v0-draft` contents, in this order:
+
+1. Heading: "Signature Certificate" and the contract id.
+2. Document title, original PDF SHA-256, page count, size.
+3. Signer name (as entered by admin), typed name (as entered by signer),
+   signer email.
+4. Signed at: `2026-09-28 20:07:10 NPT (Asia/Kathmandu, UTC+05:45)` and
+   `2026-09-28 14:22:10 UTC`. Both lines always present.
+5. Link sent at, link expiry, both in Asia/Kathmandu and UTC.
+6. Signer IP address and user agent string.
+7. Consent text as shown, with its version.
+8. Footer: "Generated by Foodverse Contract Signing. The complete audit log
+   for this contract is retained by Foodverse. [v0-draft — pending legal
+   review]"
+
+The final PDF's own hash cannot appear on the certificate page (it would
+change the hash). It is stored in the database, returned by the API, and
+printed in the completion emails.
+
+All timestamps shown to humans (certificate page, emails, admin UI) are
+rendered in `DISPLAY_TIMEZONE` (default `Asia/Kathmandu`) with UTC
+alongside. Storage and the API stay UTC.
+
+## 9. Retention and anonymization (v1, pending legal review)
+
+Framed against Nepal's Individual Privacy Act 2075 (2018): personal data is
+collected for a stated purpose, kept no longer than that purpose requires,
+and protected while held.
+
+**Signed contracts.** The signed PDF, the original PDF, the signature image,
+the signer row, and all audit rows and their PII are kept for the contract
+term plus 7 years. `retain_until` is computed at signing as
+`(term_end_date if set else signed_at::date) + 7 years` and exposed in the
+API. **Nothing is auto-deleted in v1.** A later ticket will decide what
+happens at `retain_until`; the date is stored now so it does not have to be
+reconstructed.
+
+**Unsigned contracts** (`draft`, `expired`, `cancelled`). 90 days after the
+contract last changed (`updated_at`), a daily retention job:
+
+1. Sets `signers.name` and `signers.email` to `null`.
+2. Deletes the `contract_event_pii` rows for the contract (IP, user agent).
+3. Deletes `signature.png` from storage if present (it should not be, for
+   an unsigned contract, but the job checks).
+4. Sets `contracts.anonymized_at`.
+5. Writes a `signer.anonymized` event with `actor_type: system`.
+
+It does **not** touch `contract_events` rows, the contract title, the
+original PDF, statuses, or timestamps. Anonymized contracts still appear in
+the admin list with signer shown as "Redacted" and cannot be re-sent.
+
+The retention job runs under a dedicated database role
+(`RETENTION_DATABASE_URL`) that has `DELETE` on `contract_event_pii` and
+`UPDATE` on `signers` and `contracts` only. It is scheduled daily and can be
+run by hand with `uv run python -m app.cli run-retention`.
+
+## 10. Notifications
+
+All email goes through plain SMTP using the settings in `.env`
+(`SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_USE_TLS`,
+`EMAIL_FROM`). No provider SDKs, no provider-specific headers. Local
+development uses Mailpit from `docker compose`. Tests use an in-memory fake
+behind the same interface.
+
+| Trigger                        | To     | Content                                                                 |
+|--------------------------------|--------|-------------------------------------------------------------------------|
+| `contract.sent`, `link.resent` with `send_email: true` | Signer | Title, sender organisation, expiry (Kathmandu + UTC), the signing link, optional admin message. |
+| `contract.signed`              | Signer | Confirmation; signed PDF attached, or a 72-hour download link if oversized; SHA-256 in the body. |
+| `contract.signed`              | Admin (`created_by`) | Same as signer plus a link to the admin contract page.    |
 
 Every send attempt writes `notification.sent` or `notification.failed` with
-the recipient role (never the address) and provider message id in
-`metadata`. Failures are surfaced in the admin UI; there is no automatic
-retry in v1.
+the recipient role (never the address), the delivery mode
+(`attachment` or `link`), and the SMTP message id in `metadata`. Failures
+are surfaced in the admin UI; there is no automatic retry in v1.
 
-## 9. Interfaces
+## 11. Interfaces
 
 The HTTP contract is defined in `openapi.yaml` at the repo root and is the
 source of truth. In summary:
 
+Admin auth (`/api/v1/admin/auth`):
+
+- `POST /login` — email + password, returns JWT.
+- `GET /me` — current admin from the bearer token.
+
 Admin (`/api/v1/admin`, bearer auth):
 
-- `POST /contracts` — multipart upload of PDF + title + signer.
+- `POST /contracts` — multipart upload of PDF + title + signer + optional
+  term end date.
 - `GET /contracts` — paginated list, filterable by status.
 - `GET /contracts/{contract_id}` — detail including signer and events.
-- `POST /contracts/{contract_id}/send` — issue (or rotate) the signing link.
+- `POST /contracts/{contract_id}/send` — issue (or rotate) the signing link;
+  returns the link; optionally emails it.
 - `POST /contracts/{contract_id}/cancel` — cancel.
 - `GET /contracts/{contract_id}/download` — short-lived signed URL for
   `original` or `signed`.
 
 Public (`/api/v1/public`, token in path, rate limited):
 
-- `GET /sign/{token}` — contract metadata plus short-lived URL to the PDF.
-  Marks `viewed`.
+- `GET /sign/{token}` — contract metadata, consent text, and short-lived URL
+  to the PDF. Marks `viewed`.
 - `POST /sign/{token}/signature` — submit typed name, drawn signature,
   consent. Returns the final hash and a short-lived download URL.
 
-## 10. Decisions made and open questions
+## 12. Decisions and open questions
 
-Decisions taken in this spec (change them here first if you disagree):
+### Accepted decisions (2026-09-26)
 
 1. One signer per contract, but `signers` is a separate table for forward
    compatibility.
 2. "Single use" applies to the signing action, not to viewing. Signers can
    reopen the link until they sign or it expires.
-3. `GET /sign/{token}` has the side effect of marking `viewed`. Email link
-   scanners fetch the web page, not the JSON API, so this is acceptable for
-   v1. If it proves noisy, the frontend can call an explicit view endpoint.
+3. `GET /sign/{token}` has the side effect of marking `viewed`.
 4. Re-sending rotates the token and resets `expires_at`; the old link dies
    immediately.
-5. Downloads return a JSON body with a signed URL rather than a 302, so the
-   frontend can show the hash next to the link and so the URL never lands in
-   browser history via a redirect.
-6. The final PDF hash cannot be embedded in the PDF itself (it would change
-   the hash). The certificate page carries the original PDF hash; the final
-   hash lives in the database, the API, and the email.
+5. Downloads return a JSON body with a signed URL rather than a 302.
+6. The certificate page carries the original PDF hash; the final hash lives
+   in the database, the API, and the email.
 7. Email failures after a successful signature do not roll back the
-   signature. The signature is the legally meaningful event.
+   signature.
+8. Tooling: `uv` for Python, `npm` for web, `docker compose` for Postgres,
+   MinIO, and Mailpit; real Postgres in tests with faked storage and email.
+9. Limits: 14-day default link TTL (1–30 per send), 5-minute download URLs,
+   20 MB PDFs, 500 KB PNG signatures.
+10. Send returns the signing link; email is optional via `send_email`
+    (default true).
+11. Completion emails attach the signed PDF, falling back to a 72-hour
+    pre-signed link above `EMAIL_MAX_ATTACHMENT_BYTES` (10 MB).
+12. Email is SMTP only, provider-agnostic.
+13. Admin auth is an own `admins` table with argon2id passwords, JWT with
+    `sub` = admin id, first admin seeded by CLI. No signup, no email reset.
+14. Retention as in §9, referencing Nepal's Individual Privacy Act 2075.
+    Signed material: term + 7 years, never auto-deleted in v1. Unsigned:
+    signer PII purged after 90 days, audit rows kept anonymized.
+15. Event PII (IP, user agent) is stored in `contract_event_pii` so
+    anonymization never updates or deletes a `contract_events` row.
+16. Consent and certificate text are `v0-draft` placeholders.
+17. Certificate timestamps are shown in both Asia/Kathmandu and UTC.
 
-Open questions for the reviewer:
+### Open questions
 
-1. **Admin auth.** Which internal auth provider issues the bearer token, and
-   what claim carries the admin id? The spec assumes an opaque `admin_id`
-   string.
-2. **Data retention.** How long do we keep signed PDFs, signature images, and
-   audit rows? Is there a GDPR erasure path for a signer who never signed?
-3. **Legal wording.** The exact consent checkbox text and certificate page
-   wording should come from legal. The spec uses placeholders.
-4. **Timezone on the certificate page.** UTC only, or UTC plus the signer's
-   browser timezone?
-5. **Email provider.** SES, Postmark, SMTP relay? Affects `.env` keys and the
-   attachment size limit (SES caps at 40 MB, Postmark at 10 MB).
-6. **Rate limit numbers.** The figures in §7 are starting points.
-7. **Should `expired` be reachable from `draft`?** Currently no: drafts have
-   no link and never expire.
+1. **Legal review** of: the `v0-draft` consent and certificate wording; the
+   retention periods in §9; and whether a simple electronic signature with
+   this evidence trail is sufficient for onboarding contracts under Nepal's
+   Electronic Transactions Act 2063, or whether some contracts need a
+   CA-issued digital signature.
+2. **`term_end_date` handling.** It is optional in v1 and falls back to
+   `signed_at`. Should it be required, or editable after signing if it was
+   left blank?
+3. **Unsigned contracts' original PDF.** The 90-day job removes signer PII
+   but keeps the uploaded PDF, which may itself name the signer. Delete it
+   too, or keep it because the admin may re-upload the same document?
+4. **Admin account auditing.** Logins, failed logins, and CLI admin changes
+   are only in application logs, not in a durable audit table. Is that
+   acceptable for v1?
+5. **JWT revocation.** No logout revocation; deactivating an admin takes
+   effect at token expiry (up to 8 hours). Shorten the TTL, or add a
+   `token_version` check per request?
+6. **Email download link TTL.** 72 hours for oversized attachments is a
+   guess. Too long for a link in an inbox, or too short for a busy signer?
+7. **Rate limit figures** in §7 are starting points.

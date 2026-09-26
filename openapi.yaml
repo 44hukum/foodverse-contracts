@@ -8,9 +8,12 @@ info:
     truth for request and response shapes. See SPEC.md for behaviour, status
     transitions, and security requirements.
 
-    Two groups of endpoints:
+    This is a standalone service with its own admin accounts. Three groups
+    of endpoints:
 
-    * **Admin** (`/api/v1/admin`): authenticated Foodverse staff. Bearer token.
+    * **Admin auth** (`/api/v1/admin/auth`): email + password login that
+      issues a JWT whose `sub` is the admin id.
+    * **Admin** (`/api/v1/admin`): authenticated Foodverse staff. Bearer JWT.
     * **Public** (`/api/v1/public`): unauthenticated signer endpoints keyed by
       an unguessable signing token in the path. Rate limited.
 
@@ -20,10 +23,12 @@ info:
 servers:
   - url: http://localhost:8000/api/v1
     description: Local development
-  - url: https://contracts.internal.foodverse.example/api/v1
+  - url: https://contracts.foodverse.example/api/v1
     description: Production (placeholder host)
 
 tags:
+  - name: admin-auth
+    description: Admin login and session.
   - name: admin-contracts
     description: Admin management of contracts.
   - name: public-signing
@@ -32,6 +37,63 @@ tags:
 security: []
 
 paths:
+  # ----------------------------------------------------------- admin auth ---
+  /admin/auth/login:
+    post:
+      operationId: adminLogin
+      tags: [admin-auth]
+      summary: Log in with email and password
+      description: |
+        Verifies the password against the argon2id hash in the `admins` table
+        and returns a signed JWT (`sub` = admin id, lifetime
+        `ADMIN_JWT_TTL_MINUTES`, default 480). Unknown email, wrong password,
+        and inactive admin all return the same `401 invalid_credentials`.
+        Rate limited per IP. There is no signup endpoint; admins are created
+        with the CLI (`python -m app.cli create-admin`).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Authenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/InvalidCredentials'
+        '422':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          $ref: '#/components/responses/RateLimited'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
+  /admin/auth/me:
+    get:
+      operationId: getCurrentAdmin
+      tags: [admin-auth]
+      summary: Get the admin identified by the bearer token
+      security:
+        - adminBearer: []
+      responses:
+        '200':
+          description: The current admin.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUser'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+
   # ---------------------------------------------------------------- admin ---
   /admin/contracts:
     post:
@@ -159,11 +221,18 @@ paths:
       summary: Send (or re-send) the signing link
       description: |
         Generates a new signing token, invalidates any previous one, sets
-        `expires_at`, emails the signer, and moves the contract to `sent`.
+        `expires_at`, moves the contract to `sent`, and **returns the full
+        signing link** so the admin can copy and share it manually. When
+        `send_email` is true (default) the link is also emailed to the signer.
+
+        The link is returned once, in this response only. It is never stored
+        and cannot be retrieved later; re-send to get a new one. The web app
+        must render it in a copy box, not as a navigable anchor.
 
         Allowed from `draft`, `sent`, `viewed`, and `expired`. From `sent` or
         `viewed` this is a re-send and writes `link.resent` instead of
-        `contract.sent`. The raw token is never returned to the admin.
+        `contract.sent`. Rejected with `409` if the contract's signer data
+        has been anonymized by the retention job.
       security:
         - adminBearer: []
       requestBody:
@@ -174,17 +243,37 @@ paths:
               $ref: '#/components/schemas/SendContractRequest'
       responses:
         '200':
-          description: Link sent. Returns the updated contract.
+          description: Link issued. Returns the link and the updated contract.
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ContractDetail'
+                $ref: '#/components/schemas/SendContractResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/NotFound'
         '409':
-          $ref: '#/components/responses/InvalidState'
+          description: Not sendable from the current status, or signer data has been anonymized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+              examples:
+                status:
+                  value:
+                    error:
+                      code: invalid_state
+                      message: Contract cannot be sent from status 'signed'.
+                      details:
+                        status: signed
+                        allowed_from: [draft, sent, viewed, expired]
+                anonymized:
+                  value:
+                    error:
+                      code: invalid_state
+                      message: Signer data was removed by the retention policy; this contract cannot be sent.
+                      details:
+                        reason: anonymized
         '422':
           $ref: '#/components/responses/ValidationError'
         '500':
@@ -356,8 +445,9 @@ components:
       scheme: bearer
       bearerFormat: JWT
       description: |
-        Bearer token issued by the Foodverse internal auth layer. The API
-        derives `admin_id` from it and records it on every audit event.
+        JWT issued by `POST /admin/auth/login`. HS256, `sub` = admin id,
+        `exp` after `ADMIN_JWT_TTL_MINUTES`. The API records `sub` on every
+        audit event. No refresh tokens in v1.
 
   parameters:
     ContractId:
@@ -399,6 +489,16 @@ components:
             error:
               code: unauthorized
               message: A valid bearer token is required.
+    InvalidCredentials:
+      description: Wrong email or password, or inactive admin. Always the same body.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: invalid_credentials
+              message: Email or password is incorrect.
     NotFound:
       description: |
         Resource not found. For public endpoints this also covers unknown,
@@ -546,6 +646,7 @@ components:
         - pdf.downloaded
         - notification.sent
         - notification.failed
+        - signer.anonymized
 
     ActorType:
       type: string
@@ -556,6 +657,7 @@ components:
       enum:
         - bad_request
         - unauthorized
+        - invalid_credentials
         - not_found
         - invalid_state
         - link_expired
@@ -586,6 +688,58 @@ components:
               additionalProperties: true
               description: Machine-readable extras. Never contains tokens or PII beyond what the caller already sent.
 
+    # -------------------------------------------------------- admin auth ---
+    LoginRequest:
+      type: object
+      required: [email, password]
+      properties:
+        email:
+          type: string
+          format: email
+          maxLength: 320
+        password:
+          type: string
+          format: password
+          minLength: 12
+          maxLength: 1024
+
+    LoginResponse:
+      type: object
+      required: [access_token, token_type, expires_in, admin]
+      properties:
+        access_token:
+          type: string
+          description: "JWT. Send as `Authorization: Bearer <token>`."
+        token_type:
+          type: string
+          const: bearer
+        expires_in:
+          type: integer
+          description: Seconds until the token expires.
+          examples: [28800]
+        admin:
+          $ref: '#/components/schemas/AdminUser'
+
+    AdminUser:
+      type: object
+      required: [id, email, name, created_at]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Also the JWT `sub`.
+        email:
+          type: string
+          format: email
+        name:
+          type: string
+        last_login_at:
+          type: [string, 'null']
+          format: date-time
+        created_at:
+          type: string
+          format: date-time
+
     # ----------------------------------------------------- admin requests ---
     CreateContractRequest:
       type: object
@@ -600,6 +754,13 @@ components:
           minLength: 1
           maxLength: 200
           examples: ['Hotel Aurora — Onboarding Agreement 2026']
+        term_end_date:
+          type: string
+          format: date
+          description: |
+            Optional end date of the contract term. Drives `retain_until`
+            (term end + 7 years). Falls back to the signing date if omitted.
+          examples: ['2028-12-31']
         signer_name:
           type: string
           minLength: 1
@@ -614,6 +775,12 @@ components:
     SendContractRequest:
       type: object
       properties:
+        send_email:
+          type: boolean
+          default: true
+          description: |
+            Email the link to the signer. Set false to share the returned
+            link manually; the audit event then records `delivery: manual`.
         expires_in_days:
           type: integer
           minimum: 1
@@ -622,7 +789,7 @@ components:
         message:
           type: string
           maxLength: 1000
-          description: Optional personal note included in the email to the signer.
+          description: Optional personal note included in the email to the signer. Ignored when `send_email` is false.
 
     CancelContractRequest:
       type: object
@@ -641,10 +808,12 @@ components:
           type: string
           format: uuid
         name:
-          type: string
+          type: [string, 'null']
+          description: Null after the retention job anonymizes an unsigned contract.
         email:
-          type: string
+          type: [string, 'null']
           format: email
+          description: Null after anonymization.
         has_active_link:
           type: boolean
           description: True when a non-invalidated, non-expired token exists.
@@ -657,6 +826,9 @@ components:
         consent_given_at:
           type: [string, 'null']
           format: date-time
+        consent_text_version:
+          type: [string, 'null']
+          description: Version of the consent wording the signer accepted, e.g. `v0-draft`.
         signed_ip:
           type: [string, 'null']
           description: IPv4 or IPv6 address of the signer at signing.
@@ -685,12 +857,18 @@ components:
           $ref: '#/components/schemas/ContractStatus'
         created_by:
           type: string
-          description: Admin id from the auth layer.
+          format: uuid
+          description: Id of the admin who created the contract.
+        term_end_date:
+          type: [string, 'null']
+          format: date
         signer_name:
-          type: string
+          type: [string, 'null']
+          description: Null after anonymization.
         signer_email:
-          type: string
+          type: [string, 'null']
           format: email
+          description: Null after anonymization.
         original_pdf_sha256:
           type: string
           pattern: '^[a-f0-9]{64}$'
@@ -713,6 +891,14 @@ components:
         cancelled_at:
           type: [string, 'null']
           format: date-time
+        retain_until:
+          type: [string, 'null']
+          format: date
+          description: Set at signing to (term_end_date or signing date) + 7 years. Informational in v1; nothing is auto-deleted.
+        anonymized_at:
+          type: [string, 'null']
+          format: date-time
+          description: Set when the retention job removed signer personal data from an unsigned contract.
         created_at:
           type: string
           format: date-time
@@ -743,12 +929,14 @@ components:
           format: date-time
         ip:
           type: [string, 'null']
+          description: Null for system events and after anonymization.
         user_agent:
           type: [string, 'null']
+          description: Null for system events and after anonymization.
         metadata:
           type: object
           additionalProperties: true
-          description: Event-specific payload, e.g. `from_status` / `to_status`. Never contains the raw token.
+          description: "Event-specific payload, e.g. `from_status` / `to_status`, `delivery` (email or manual). Never contains the raw token or personal data."
 
     ContractDetail:
       allOf:
@@ -779,6 +967,34 @@ components:
           type: [string, 'null']
           description: Pass as `cursor` to fetch the next page. Null on the last page.
 
+    SigningLink:
+      type: object
+      required: [url, expires_at]
+      properties:
+        url:
+          type: string
+          format: uri
+          description: |
+            Full signing URL (`{WEB_BASE_URL}/sign/{token}`). Shown to the admin
+            once. Never stored or logged by the server; must not be logged or
+            sent to analytics by the client.
+          examples: ['https://contracts.foodverse.example/sign/9Xk2m_VbT4qLw8ZpR1nYc3sDf6hJg0aEu5iOo7tQyWv']
+        expires_at:
+          type: string
+          format: date-time
+
+    SendContractResponse:
+      type: object
+      required: [contract, signing_link, email_sent]
+      properties:
+        contract:
+          $ref: '#/components/schemas/ContractDetail'
+        signing_link:
+          $ref: '#/components/schemas/SigningLink'
+        email_sent:
+          type: boolean
+          description: True when `send_email` was true and the SMTP handoff succeeded. False when disabled or when sending failed (see `notification.failed` event).
+
     DownloadLink:
       type: object
       required: [variant, url, expires_at, sha256, filename]
@@ -803,7 +1019,7 @@ components:
     # ---------------------------------------------------- public schemas ---
     PublicContract:
       type: object
-      required: [contract_id, title, status, signer, expires_at, pdf, consent_text]
+      required: [contract_id, title, status, signer, expires_at, pdf, consent_text, consent_text_version]
       properties:
         contract_id:
           type: string
@@ -848,11 +1064,15 @@ components:
               description: Bytes.
         consent_text:
           type: string
-          description: Exact consent wording the UI must show next to the checkbox. Server-defined so legal wording is versioned in one place.
+          description: Exact consent wording the UI must show next to the checkbox. Server-defined so legal wording is versioned in one place. Currently `v0-draft`, pending legal review.
+        consent_text_version:
+          type: string
+          description: Version identifier of `consent_text`, e.g. `v0-draft`. Echo it back in `SubmitSignatureRequest`.
+          examples: ['v0-draft']
 
     SubmitSignatureRequest:
       type: object
-      required: [typed_name, signature_image, consent]
+      required: [typed_name, signature_image, consent, consent_text_version]
       properties:
         typed_name:
           type: string
@@ -872,7 +1092,7 @@ components:
           description: Must be `true`. The UI shows `consent_text` from the GET response.
         consent_text_version:
           type: string
-          description: Optional. Echo of the consent wording version shown, recorded in the audit event.
+          description: Echo of `PublicContract.consent_text_version`. Stored on the signer and printed on the certificate page.
 
     SignatureResult:
       type: object
