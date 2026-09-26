@@ -5,15 +5,18 @@ import { ContractDetailPage } from './pages/ContractDetailPage';
 import { ContractListPage } from './pages/ContractListPage';
 import { CreateContractPage } from './pages/CreateContractPage';
 import { LoginPage } from './pages/LoginPage';
+import { SignPage } from './sign/SignPage';
 
 /**
- * Admin routes only. The signer-facing `/sign/:token` page is a separate issue
- * and lives under `src/sign/`, which this app does not touch.
+ * Admin routes behind `RequireAuth`, plus the signer-facing `/sign/:token`
+ * page from `src/sign/`, which is public: the token is the signer's only
+ * credential (SPEC.md §3).
  */
 export function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/sign/:token" element={<SignPage />} />
       <Route
         element={
           <RequireAuth>

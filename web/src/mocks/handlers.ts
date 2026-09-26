@@ -18,6 +18,7 @@ import type {
   SendContractResponse,
 } from '../api/types';
 import { CONTRACT_STATUSES, SENDABLE_STATUSES } from '../api/types';
+import { publicSigningHandlers } from '../sign/mocks/handlers';
 import {
   MOCK_ACCESS_TOKEN,
   MOCK_ADMIN,
@@ -312,14 +313,19 @@ export const handlers = [
       },
     });
 
+    // Rotation: the previous token stops resolving the moment a new one is issued.
+    const token = newSigningToken();
+    db.signingTokens.set(contract.id, token);
     const response: SendContractResponse = {
       contract,
       signing_link: {
-        url: `${webBaseUrl()}/sign/${newSigningToken()}`,
+        url: `${webBaseUrl()}/sign/${token}`,
         expires_at: expires.toISOString(),
       },
       email_sent: Boolean(body.send_email),
     };
     return HttpResponse.json(response);
   }),
+
+  ...publicSigningHandlers,
 ];

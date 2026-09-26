@@ -19,6 +19,10 @@ export type CreateContractRequest = Schemas['CreateContractRequest'];
 export type SendContractRequest = Schemas['SendContractRequest'];
 export type SendContractResponse = Schemas['SendContractResponse'];
 export type SigningLink = Schemas['SigningLink'];
+export type DownloadLink = Schemas['DownloadLink'];
+export type PublicContract = Schemas['PublicContract'];
+export type SubmitSignatureRequest = Schemas['SubmitSignatureRequest'];
+export type SignatureResult = Schemas['SignatureResult'];
 export type ApiErrorBody = Schemas['Error'];
 export type ErrorCode = Schemas['ErrorCode'];
 
