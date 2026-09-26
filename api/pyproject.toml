@@ -16,6 +16,10 @@ dependencies = [
     "argon2-cffi>=23.1",
     "pyjwt>=2.9",
     "python-multipart>=0.0.12",
+    # PDF module (FVR-8)
+    "pillow>=11",
+    "pypdf[crypto]>=6,<7",
+    "reportlab>=4.2,<6",
 ]
 
 [dependency-groups]
@@ -27,6 +31,7 @@ dev = [
     "mypy>=1.13",
     "pyyaml>=6.0",
     "types-PyYAML>=6.0",
+    "types-reportlab",
     "python-dotenv>=1.0",
 ]
 
@@ -42,8 +47,8 @@ line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "B", "UP", "N", "S", "ASYNC", "RUF"]
-ignore = ["S101", "RUF012"]
+select = ["E", "F", "W", "I", "B", "UP", "N", "S", "SIM", "PL", "ASYNC", "RUF"]
+ignore = ["S101", "RUF012", "PLR0913", "PLR0917", "PLR2004"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S105", "S106", "S108", "ASYNC240"]
