@@ -35,7 +35,7 @@ jobs:
       TEST_DATABASE_URL: postgresql+asyncpg://foodverse:foodverse@localhost:5432/foodverse_contracts_test
       RETENTION_DATABASE_URL: postgresql+asyncpg://foodverse_retention:foodverse@localhost:5432/foodverse_contracts
       STORAGE_BACKEND: local
-      LOCAL_STORAGE_DIR: ${{ runner.temp }}/local-storage
+      LOCAL_STORAGE_DIR: ${{ github.workspace }}/.local-storage
       JWT_SECRET: ci-only-placeholder-secret-not-used-anywhere-else-0000
       SMTP_HOST: localhost
       SMTP_PORT: "1025"
