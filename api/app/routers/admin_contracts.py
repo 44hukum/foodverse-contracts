@@ -26,8 +26,11 @@ from app.schemas.contracts import (
     ContractList,
     DownloadLink,
     PdfVariant,
+    SendContractRequest,
+    SendContractResponse,
 )
 from app.services import contracts as svc
+from app.services import signing
 
 router = APIRouter(prefix="/admin/contracts", tags=["admin-contracts"])
 _EMAIL: TypeAdapter[EmailStr] = TypeAdapter(EmailStr)
@@ -140,6 +143,43 @@ async def get_contract(
     admin: CurrentAdmin, session: SessionDep, contract_id: str
 ) -> ContractDetail:
     return await svc.get_contract(session, _parse_id(contract_id))
+
+
+@router.post(
+    "/{contract_id}/send",
+    operation_id="sendContractLink",
+    summary="Send (or re-send) the signing link",
+    response_model=SendContractResponse,
+    responses=responses(
+        UNAUTHORIZED,
+        NOT_FOUND,
+        {
+            409: {
+                "model": Error,
+                "description": "Not sendable from the current status, or signer data anonymized.",
+            }
+        },
+        VALIDATION,
+        INTERNAL,
+    ),
+)
+async def send_contract_link(
+    admin: CurrentAdmin,
+    session: SessionDep,
+    settings: SettingsDep,
+    client: ClientDep,
+    contract_id: str,
+    body: SendContractRequest | None = None,
+) -> SendContractResponse:
+    # Rule 6: the response carries the raw link once; nothing here logs it.
+    return await signing.send_link(
+        session,
+        settings,
+        contract_id=_parse_id(contract_id),
+        admin_id=admin.id,
+        request=body or SendContractRequest(),
+        client=client,
+    )
 
 
 @router.post(

@@ -17,16 +17,18 @@ from app.config import Settings, get_settings
 from app.db import make_engine, make_session_factory
 from app.errors import install_exception_handlers
 from app.ratelimit import RateLimiter
-from app.routers import admin_auth, admin_contracts, local_storage
+from app.routers import admin_auth, admin_contracts, local_storage, public_signing
+from app.services.consent import consent_template
 from app.services.storage import LocalStorage, build_storage
 
 API_PREFIX = "/api/v1"
-API_ROUTERS = (admin_auth.router, admin_contracts.router)
+API_ROUTERS = (admin_auth.router, admin_contracts.router, public_signing.router)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     settings = settings or get_settings()
     logging.basicConfig(level=settings.log_level.upper())
+    consent_template(settings.consent_text_version)  # fail at startup, not at the first signer
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:

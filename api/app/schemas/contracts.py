@@ -21,6 +21,12 @@ class CancelContractRequest(BaseModel):
     reason: str | None = Field(default=None, max_length=500)
 
 
+class SendContractRequest(BaseModel):
+    send_email: bool = True
+    expires_in_days: int | None = Field(default=None, ge=1, le=30)
+    message: str | None = Field(default=None, max_length=1000)
+
+
 class Signer(ApiModel):
     id: uuid.UUID
     name: str | None
@@ -84,3 +90,14 @@ class DownloadLink(BaseModel):
     expires_at: datetime
     sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     filename: str
+
+
+class SigningLink(BaseModel):
+    url: str
+    expires_at: datetime
+
+
+class SendContractResponse(BaseModel):
+    contract: ContractDetail
+    signing_link: SigningLink
+    email_sent: bool
