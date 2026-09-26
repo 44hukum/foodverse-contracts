@@ -48,8 +48,8 @@ line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "B", "UP", "N", "S", "SIM", "PL", "ASYNC", "RUF"]
-ignore = ["S101", "RUF012", "PLR0913", "PLR0917", "PLR2004"]
+select = ["E", "F", "W", "I", "B", "UP", "N", "S", "ASYNC", "RUF"]
+ignore = ["S101", "RUF012"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S105", "S106", "S108", "ASYNC240"]
