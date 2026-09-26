@@ -40,6 +40,11 @@ the 404 bucket.
 - **Consent wording.** `CONSENT_TEXT_VERSION` must name a template in
   `app/services/consent.py`; the app refuses to start otherwise. Add a new
   version instead of editing an old one.
-- **Email.** Sending currently returns `email_sent: false`; SMTP delivery of
-  the link is wired in by the notifications issue. The admin copies the link
-  from the send response in the meantime.
+- **Email.** With `send_email: true` the link is emailed over plain SMTP
+  (`SMTP_*`, `EMAIL_FROM`); `email_sent` in the send response reports whether
+  the handoff succeeded. Each notification is attempted `EMAIL_SEND_ATTEMPTS`
+  times (default 3, `SMTP_TIMEOUT_SECONDS` per attempt) and then written as
+  `notification.sent` or `notification.failed` on the contract's audit trail.
+  There is no background retry: on a failed send the admin still has the link
+  in the response and can share it by hand or re-send. Locally, Mailpit shows
+  every message at http://localhost:8025.

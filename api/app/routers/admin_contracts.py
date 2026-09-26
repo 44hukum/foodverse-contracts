@@ -7,7 +7,7 @@ from typing import Annotated
 from fastapi import APIRouter, File, Form, Query, UploadFile, status
 from pydantic import EmailStr, TypeAdapter, ValidationError
 
-from app.deps import ClientDep, CurrentAdmin, SessionDep, SettingsDep, StorageDep
+from app.deps import ClientDep, CurrentAdmin, MailerDep, SessionDep, SettingsDep, StorageDep
 from app.errors import ApiError, not_found
 from app.models.contract import ContractStatus
 from app.routers.responses import (
@@ -167,6 +167,7 @@ async def send_contract_link(
     admin: CurrentAdmin,
     session: SessionDep,
     settings: SettingsDep,
+    mailer: MailerDep,
     client: ClientDep,
     contract_id: str,
     body: SendContractRequest | None = None,
@@ -175,6 +176,7 @@ async def send_contract_link(
     return await signing.send_link(
         session,
         settings,
+        mailer,
         contract_id=_parse_id(contract_id),
         admin_id=admin.id,
         request=body or SendContractRequest(),

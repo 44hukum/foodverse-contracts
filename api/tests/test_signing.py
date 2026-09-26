@@ -50,6 +50,13 @@ def token_of(url: str) -> str:
     return url.rsplit("/", 1)[-1]
 
 
+def only(events: list[dict[str, Any]], event_type: str) -> dict[str, Any]:
+    """The single event of that type (notification events sit after status events)."""
+    matches = [e for e in events if e["event_type"] == event_type]
+    assert len(matches) == 1, [e["event_type"] for e in events]
+    return matches[0]
+
+
 def data_url(png: bytes) -> str:
     return "data:image/png;base64," + base64.b64encode(png).decode()
 
@@ -125,7 +132,7 @@ async def test_send_from_draft_issues_link_and_stores_only_the_hash(
     expires_at = iso(body["signing_link"]["expires_at"])
     ttl = timedelta(days=settings.signing_link_ttl_days)
     assert ttl <= (expires_at - before) < ttl + timedelta(seconds=5)
-    assert body["email_sent"] is False  # SMTP delivery arrives with the notifications issue
+    assert body["email_sent"] is True  # in-memory outbox; the content is tested in tests/notify
 
     contract = body["contract"]
     assert contract["status"] == "sent"
@@ -135,8 +142,12 @@ async def test_send_from_draft_issues_link_and_stores_only_the_hash(
     assert contract["signer"]["token_created_at"] is not None
     assert token not in resp.text.replace(body["signing_link"]["url"], "")
 
-    assert [e["event_type"] for e in contract["events"]] == ["contract.created", "contract.sent"]
-    sent = contract["events"][-1]
+    assert [e["event_type"] for e in contract["events"]] == [
+        "contract.created",
+        "contract.sent",
+        "notification.sent",
+    ]
+    sent = only(contract["events"], "contract.sent")
     assert sent["actor_type"] == "admin" and sent["actor_id"] == str(admin.id)
     assert sent["metadata"] == {
         "from_status": "draft",
@@ -214,11 +225,10 @@ async def test_resend_rotates_token_and_kills_the_old_link(
     assert new_token != old_token
     assert body["contract"]["status"] == "sent"
     assert body["contract"]["signer"]["has_active_link"] is True
-    assert body["contract"]["events"][-1]["event_type"] == "link.resent"
-    assert body["contract"]["events"][-1]["metadata"]["from_status"] == (
-        "viewed" if view_first else "sent"
-    )
-    assert body["contract"]["events"][-1]["metadata"]["token_rotated"] is True
+    assert body["contract"]["events"][-1]["event_type"] == "notification.sent"
+    resent = only(body["contract"]["events"], "link.resent")
+    assert resent["metadata"]["from_status"] == ("viewed" if view_first else "sent")
+    assert resent["metadata"]["token_rotated"] is True
     if view_first:
         assert body["contract"]["first_viewed_at"] is not None  # history is kept
     assert await token_hash_in_db(session, contract_id) == hash_token(new_token)
@@ -240,8 +250,8 @@ async def test_send_from_expired_writes_contract_sent(
     resp = await client.post(f"/admin/contracts/{contract_id}/send", headers=auth_headers)
     assert resp.status_code == 200, resp.text
     assert resp.json()["contract"]["status"] == "sent"
-    last = resp.json()["contract"]["events"][-1]
-    assert last["event_type"] == "contract.sent"
+    assert resp.json()["contract"]["events"][-1]["event_type"] == "notification.sent"
+    last = [e for e in resp.json()["contract"]["events"] if e["event_type"] == "contract.sent"][-1]
     assert last["metadata"]["from_status"] == "expired"
     assert last["metadata"]["token_rotated"] is True
 
@@ -337,6 +347,7 @@ async def test_view_marks_viewed_and_records_each_load(
     assert [e["event_type"] for e in after["events"]] == [
         "contract.created",
         "contract.sent",
+        "notification.sent",
         "link.viewed",
         "link.viewed",
     ]
@@ -378,7 +389,12 @@ async def test_tampered_token_is_404(
     # the real link still works and nothing was recorded for the failed attempts
     assert (await client.get(f"/public/sign/{token}")).status_code == 200
     events = await events_of(client, auth_headers, sent["contract"]["id"])
-    assert [e["event_type"] for e in events] == ["contract.created", "contract.sent", "link.viewed"]
+    assert [e["event_type"] for e in events] == [
+        "contract.created",
+        "contract.sent",
+        "notification.sent",
+        "link.viewed",
+    ]
 
 
 async def test_expired_link_is_410_and_expires_the_contract(
@@ -551,12 +567,15 @@ async def test_sign_stamps_stores_and_invalidates(
     assert signer["consent_text_version"] == "v0-draft"
     assert signer["signed_ip"] == SIGNER_IP
     assert signer["signed_user_agent"] == SIGNER_UA
-    event = detail["events"][-1]
+    event = only(detail["events"], "contract.signed")
     assert [e["event_type"] for e in detail["events"]] == [
         "contract.created",
         "contract.sent",
+        "notification.sent",
         "link.viewed",
         "contract.signed",
+        "notification.sent",
+        "notification.sent",
     ]
     assert event["actor_type"] == "signer" and event["actor_id"] == signer["id"]
     assert event["occurred_at"] == body["signed_at"]
@@ -589,8 +608,11 @@ async def test_sign_stamps_stores_and_invalidates(
     assert [e["event_type"] for e in await events_of(client, auth_headers, contract_id)] == [
         "contract.created",
         "contract.sent",
+        "notification.sent",
         "link.viewed",
         "contract.signed",
+        "notification.sent",
+        "notification.sent",
         "pdf.downloaded",
     ]
     assert await token_hash_in_db(session, contract_id) == hash_token(token)
@@ -607,7 +629,7 @@ async def test_sign_without_prior_view_and_term_end_date(
     ).json()
     assert detail["status"] == "signed"
     assert detail["first_viewed_at"] is None
-    assert detail["events"][-1]["metadata"]["from_status"] == "sent"
+    assert only(detail["events"], "contract.signed")["metadata"]["from_status"] == "sent"
     assert detail["retain_until"] == str(
         date(2028, 12, 31).replace(year=2028 + settings.retention_signed_years_after_term)
     )
@@ -664,7 +686,11 @@ async def test_sign_validation_errors_change_nothing(
         detail = (await client.get(f"/admin/contracts/{contract_id}", headers=auth_headers)).json()
         assert detail["status"] == "sent"
         assert detail["signer"]["typed_name"] is None
-        assert [e["event_type"] for e in detail["events"]] == ["contract.created", "contract.sent"]
+        assert [e["event_type"] for e in detail["events"]] == [
+            "contract.created",
+            "contract.sent",
+            "notification.sent",
+        ]
         folder = Path(settings.local_storage_dir) / "contracts" / contract_id
         assert sorted(p.name for p in folder.iterdir()) == ["original.pdf"]
     # both links are still good
@@ -693,6 +719,7 @@ async def test_sign_failure_leaves_contract_and_storage_untouched(
     assert [e["event_type"] for e in detail["events"]] == [
         "contract.created",
         "contract.sent",
+        "notification.sent",
         "link.viewed",
     ]
     folder = Path(settings.local_storage_dir) / "contracts" / contract_id
@@ -731,4 +758,4 @@ async def test_garbage_forwarded_ip_does_not_break_signing(
     ).json()
     assert detail["signer"]["signed_ip"] == "127.0.0.1"  # the direct peer, not the junk header
     assert len(detail["signer"]["signed_user_agent"]) == 1000
-    assert detail["events"][-1]["ip"] == "127.0.0.1"
+    assert only(detail["events"], "contract.signed")["ip"] == "127.0.0.1"

@@ -37,6 +37,7 @@ dev = [
     "python-dotenv>=1.0",
     "moto[s3]>=5.2.3",
     "boto3-stubs[s3]>=1.43.103",
+    "aiosmtpd>=1.4",
 ]
 
 [build-system]

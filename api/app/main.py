@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from app.config import Settings, get_settings
 from app.db import make_engine, make_session_factory
 from app.errors import install_exception_handlers
+from app.notify import build_mailer
 from app.ratelimit import RateLimiter
 from app.routers import admin_auth, admin_contracts, local_storage, public_signing
 from app.services.consent import consent_template
@@ -52,6 +53,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
     app.state.settings = settings
     app.state.storage = build_storage(settings)
+    app.state.mailer = build_mailer(settings)
     app.state.rate_limiter = RateLimiter()
 
     app.add_middleware(

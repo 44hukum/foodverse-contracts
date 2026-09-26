@@ -82,6 +82,8 @@ class Settings(BaseSettings):
     email_from: str = "Foodverse Contracts <contracts@foodverse.example>"
     email_max_attachment_bytes: int = 10 * 1024 * 1024
     email_download_link_ttl_hours: int = 72
+    email_send_attempts: int = 3
+    smtp_timeout_seconds: float = 15.0
 
     @field_validator("jwt_secret")
     @classmethod
@@ -102,6 +104,13 @@ class Settings(BaseSettings):
         # SPEC.md §7: links live 1..30 days; the default must be a legal per-send value.
         if not 1 <= value <= 30:
             raise ValueError("SIGNING_LINK_TTL_DAYS must be between 1 and 30")
+        return value
+
+    @field_validator("email_send_attempts")
+    @classmethod
+    def _at_least_one_attempt(cls, value: int) -> int:
+        if value < 1:
+            raise ValueError("EMAIL_SEND_ATTEMPTS must be at least 1")
         return value
 
     @property
