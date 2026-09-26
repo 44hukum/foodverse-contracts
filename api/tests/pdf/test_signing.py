@@ -185,10 +185,13 @@ def test_full_last_page_gets_signature_on_a_new_page(
     certificate: CertificateDetails,
     events: list[AuditEvent],
 ) -> None:
+    original_pages = len(PdfReader(BytesIO(full_last_page_pdf)).pages)
     signed = _sign(full_last_page_pdf, signature_png, certificate, events)
     reader = _reader(signed)
     assert signed.signature_on_new_page is True
-    assert signed.page_count == 2 + 2  # original + signature page + certificate
+    # No room on the last page: original + 2 (signature page, then certificate).
+    assert signed.page_count == original_pages + 2
+    assert len(reader.pages) == original_pages + 2
     assert "Signed electronically" not in _text(reader, 1)
     assert "Signed electronically" in _text(reader, 2)
     assert len(reader.pages[2].images) == 1

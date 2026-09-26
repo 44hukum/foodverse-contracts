@@ -91,6 +91,9 @@ that forecloses them either.
       matches the stored value.
    3. Appends a signature block (drawn signature image, typed name,
       timestamp) to the last page, or to a new page if there is no room.
+      With the certificate page (step 4) the signed PDF therefore has
+      original + 1 pages when the block fits on the last page and
+      original + 2 pages when it needs a page of its own.
    4. Appends a **certificate page** (§8) with contract id, title, signer
       name and email, signing timestamp in both Asia/Kathmandu and UTC,
       signer IP, signer user agent, the SHA-256 of the original PDF, the
