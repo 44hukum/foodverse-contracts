@@ -216,3 +216,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- foodverse-contracts ----------------------------------------------------
+node_modules/
+web/dist/
+.local-storage/
+.claude/settings.local.json
