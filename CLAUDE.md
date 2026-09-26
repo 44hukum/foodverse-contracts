@@ -13,13 +13,13 @@ the only outbound integration. Read `SPEC.md` for behaviour and
 |-----------|-------------------------------------------------------------------|
 | Backend   | Python 3.12, FastAPI, SQLAlchemy 2 (2.0-style, typed), Alembic    |
 | Database  | PostgreSQL 16                                                     |
-| Storage   | S3-compatible object storage (MinIO locally, S3 in production)    |
+| Storage   | Two backends behind one interface, chosen by `STORAGE_BACKEND`: `local` (a private folder; default for dev and tests) and `s3` (S3-compatible; production) |
 | Backend tests | pytest, pytest-asyncio, httpx `AsyncClient` against the app   |
 | Frontend  | React 18, TypeScript (strict), Vite                               |
 | Frontend tests | Vitest + React Testing Library                               |
 | Auth      | Own `admins` table, argon2id passwords (`argon2-cffi`), HS256 JWT (`PyJWT`) |
 | Email     | Plain SMTP via the standard library `smtplib` / `email`. No provider SDKs. |
-| Tooling   | `uv` for Python deps and venvs, `npm` for the web app, `docker compose` for Postgres + MinIO + Mailpit |
+| Tooling   | `uv` for Python deps and venvs, `npm` for the web app, Homebrew for native Postgres 16 and Mailpit. **No Docker anywhere in local dev.** |
 
 Do not introduce another ORM, HTTP framework, state library, CSS framework,
 or package manager without an issue that asks for it.
@@ -32,7 +32,9 @@ or package manager without an issue that asks for it.
 ├── openapi.yaml       HTTP contract (source of truth for request/response shapes)
 ├── CLAUDE.md          this file
 ├── .env.example       every environment variable the system reads, with safe defaults
-├── docker-compose.yml local Postgres + MinIO + Mailpit (to be added with the first api/ scaffold)
+├── scripts/           worktree-init.sh, check.sh, hooks/ (shared dev tooling, bash only)
+├── .github/workflows/ ci.yml (runs scripts/check.sh against a Postgres service container)
+├── .claude/           settings.json (permissions + Stop hook) and skills/
 ├── api/               FastAPI backend
 │   ├── app/           application package (routers, services, models, schemas, cli)
 │   ├── alembic/       migrations
@@ -45,8 +47,9 @@ or package manager without an issue that asks for it.
 ```
 
 Backend code lives only under `api/`, frontend code only under `web/`. Shared
-documentation goes in `docs/`. Nothing at the repo root except config and
-the three spec files above.
+documentation goes in `docs/`. Nothing at the repo root except config, the
+three spec files above, and the tooling folders (`scripts/`, `.github/`,
+`.claude/`).
 
 ## How to run
 
@@ -54,16 +57,23 @@ These are the canonical commands. When you scaffold `api/` or `web/`, make
 these exact commands work; do not invent alternatives.
 
 ```bash
-# infrastructure (Postgres on 5432, MinIO on 9000/9001, Mailpit SMTP on 1025 / UI on 8025)
-cp .env.example .env            # first time only, then edit
-docker compose up -d db minio mailpit
+# infrastructure: native services from Homebrew, no Docker
+brew install postgresql@16 mailpit
+brew services start postgresql@16          # Postgres on localhost:5432
+brew services start mailpit                # SMTP on 1025, web UI on http://localhost:8025
+
+# per-checkout setup (idempotent; safe to re-run). Copies .env, derives a
+# per-branch database name and port offset, creates the database, points
+# STORAGE_BACKEND=local at a per-worktree folder, installs deps, migrates.
+scripts/worktree-init.sh
+set -a; source .env; set +a                # export API_PORT / WEB_PORT etc. into your shell
 
 # backend
 cd api
 uv sync                         # installs deps into api/.venv
 uv run alembic upgrade head
 uv run python -m app.cli create-admin --email you@example.com --name "You"   # prompts for password
-uv run uvicorn app.main:app --reload --port 8000
+uv run uvicorn app.main:app --reload --port "${API_PORT:-8000}"
 
 # other admin CLI commands (never expose these as HTTP endpoints)
 uv run python -m app.cli reset-admin-password --email you@example.com
@@ -73,12 +83,19 @@ uv run python -m app.cli run-retention          # the daily job, runnable by han
 # frontend
 cd web
 npm install
-npm run dev                     # http://localhost:5173
+npm run dev                     # http://localhost:${WEB_PORT:-5173}
 ```
+
+Files uploaded in dev land in `LOCAL_STORAGE_DIR` (git-ignored, one folder
+per worktree). Set `STORAGE_BACKEND=s3` and the `S3_*` variables only for a
+production-like run; nothing in local dev needs it.
 
 ## How to test
 
 ```bash
+# everything, exactly as CI runs it (skips api/ or web/ if that part has no code yet)
+scripts/check.sh
+
 # backend — must pass before any PR
 cd api
 uv run pytest                   # full suite, uses a throwaway Postgres schema
@@ -92,10 +109,14 @@ npm run lint
 npm run typecheck               # tsc --noEmit
 ```
 
-Backend tests run against a real PostgreSQL (from `docker compose`), not
-SQLite. Object storage is faked in tests with an in-memory implementation
-behind the same interface used in production. SMTP is faked the same way
-(an in-memory outbox); never hit a network mail server from tests.
+Backend tests run against a real PostgreSQL (native, on localhost; a
+service container in CI), not SQLite. Storage in tests uses the `local`
+backend pointed at a throwaway temp folder, behind the same interface as
+`s3` in production; the `s3` backend is unit-tested with a stub client and
+never with a real bucket. SMTP is faked with an in-memory outbox; never hit
+a network mail server from tests. The Stop hook in `.claude/settings.json`
+runs `scripts/check.sh` before an agent can finish a turn, so a red suite
+blocks the agent, not the reviewer.
 
 ## Rules
 
@@ -123,8 +144,9 @@ and say so in your PR or comment instead of breaking it.
    `api/`, do not touch `web/`, and vice versa. If you need something from
    the other side, describe it in the PR and stop; a separate issue will
    cover it. Root-level files (`SPEC.md`, `openapi.yaml`, `CLAUDE.md`,
-   `.env.example`, compose file) are shared and changes to them must be
-   called out explicitly in the PR description.
+   `.env.example`, `.gitignore`, `scripts/`, `.github/`, `.claude/`) are
+   shared and changes to them must be called out explicitly in the PR
+   description.
 5. **`openapi.yaml` is the contract.** Backend routes and frontend clients
    are implemented to match it, not the other way round. If the work cannot
    be done without changing the contract, say so in the PR (what changes and
@@ -137,8 +159,13 @@ and say so in your PR or comment instead of breaking it.
    public URL path. Do not log request or response bodies on the send or
    public endpoints. The web app shows the link in a copy box, never as a
    clickable anchor, and never passes it to analytics.
-7. **PDF bytes are never streamed by the API.** Downloads go through
-   short-lived pre-signed storage URLs only. The bucket is private.
+7. **PDF bytes are never streamed by API endpoints.** Downloads go through
+   short-lived signed URLs from the storage backend only. With `s3` that is
+   a pre-signed bucket URL and the bucket is private. With `local` the
+   backend itself mounts one HMAC-signed, expiring download route
+   (SPEC.md §6, "Storage backends"); it is not an API endpoint, it refuses
+   to start when `ENVIRONMENT=production`, and no other route may read from
+   `LOCAL_STORAGE_DIR`. Never bypass the storage interface from a router.
 8. **Status changes are conditional and evented.** Every transition uses
    `UPDATE ... WHERE status IN (...)` and writes exactly one
    `contract_events` row in the same transaction. Invalid transitions return

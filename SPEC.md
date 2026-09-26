@@ -13,8 +13,9 @@ signed PDF with a full audit trail of everything that happened to the
 contract.
 
 The project is independent of other Foodverse services: it has its own admin
-accounts, its own database, its own object storage bucket, and talks to the
-outside world only through SMTP.
+accounts, its own database, its own file storage (a private folder or a
+private S3 bucket, see §6), and talks to the outside world only through
+SMTP.
 
 v1 is deliberately small. It must be correct, auditable, and boring before it
 is convenient.
@@ -64,7 +65,7 @@ that forecloses them either.
 2. **Admin creates a contract.** The admin uploads a PDF, gives the contract
    a title, enters the signer's name and email, and optionally the contract
    term end date (used for retention, §9). The backend stores the PDF in
-   object storage, computes its SHA-256, creates a `contracts` row in status
+   file storage, computes its SHA-256, creates a `contracts` row in status
    `draft` and a `signers` row, and writes a `contract.created` event.
 3. **Admin sends the link.** The admin clicks "Send" and chooses whether to
    also email the signer (default: yes). The backend generates a signing
@@ -308,9 +309,37 @@ Rules:
 - Events are returned to admins in `GET /admin/contracts/{id}` ordered by
   `id` ascending.
 
-### Object storage layout
+### Storage backends
 
-Bucket is private. No public-read ACLs, ever.
+File storage sits behind one interface (`put`, `get`, `delete`, `exists`,
+`signed_download_url(key, ttl)`) with two implementations, selected by
+`STORAGE_BACKEND`:
+
+| Backend | When                     | `signed_download_url` is                                      |
+|---------|--------------------------|---------------------------------------------------------------|
+| `local` | dev and tests (default)  | an HMAC-signed, expiring URL served by the storage backend    |
+| `s3`    | production               | a pre-signed URL from the S3-compatible service               |
+
+- **`local`** writes under `LOCAL_STORAGE_DIR` (one folder per worktree,
+  git-ignored). Keys map to paths beneath that folder; the backend rejects
+  any key that would escape it. The signed download URL is
+  `{API_BASE_URL}/_storage/local/{key}?exp={unix_ts}&sig={hmac}`; the
+  signature is HMAC-SHA256 over `key|exp` keyed by
+  `sha256("local-storage" || JWT_SECRET)`, compared in constant time, and
+  the route returns `404` for a bad or expired signature. This route belongs
+  to the storage backend, not to the API surface in `openapi.yaml`; it is
+  mounted only when `STORAGE_BACKEND=local`, and the app refuses to start
+  with `local` when `ENVIRONMENT=production`. Uploads are never written
+  outside `LOCAL_STORAGE_DIR` and no other route reads from it.
+- **`s3`** uses the `S3_*` variables against any S3-compatible service.
+  The bucket is private. No public-read ACLs, ever. Downloads use
+  pre-signed GET URLs with the TTL the caller passes.
+
+Tests use `local` pointed at a throwaway temp folder; the `s3` backend is
+unit-tested against a stub client. Neither Docker nor a real bucket is
+needed for local dev.
+
+Key layout, identical in both backends:
 
 ```
 contracts/{contract_id}/original.pdf
@@ -349,8 +378,10 @@ contracts/{contract_id}/signature.png
   stamping, stored, returned in API responses, printed in the completion
   email, and shown in the admin UI. Anyone holding a copy can verify it
   against the stored hash.
-- **Downloads.** PDFs are never served by the API and never at a stable URL.
-  Every download goes through a pre-signed object storage URL. Interactive
+- **Downloads.** PDFs are never served by API endpoints and never at a
+  stable URL. Every download goes through a signed, expiring URL issued by
+  the storage backend (§6 "Storage backends"; a pre-signed bucket URL for
+  `s3`, an HMAC-signed local route for `local`). Interactive
   downloads use `DOWNLOAD_URL_TTL_SECONDS` (default 300). Links embedded in
   completion emails, used only when the PDF exceeds the attachment limit,
   use `EMAIL_DOWNLOAD_LINK_TTL_HOURS` (default 72). Each admin download
@@ -449,8 +480,9 @@ run by hand with `uv run python -m app.cli run-retention`.
 All email goes through plain SMTP using the settings in `.env`
 (`SMTP_HOST`, `SMTP_PORT`, `SMTP_USERNAME`, `SMTP_PASSWORD`, `SMTP_USE_TLS`,
 `EMAIL_FROM`). No provider SDKs, no provider-specific headers. Local
-development uses Mailpit from `docker compose`. Tests use an in-memory fake
-behind the same interface.
+development uses Mailpit installed natively (`brew install mailpit`), SMTP
+on 1025 and web UI on 8025. Tests use an in-memory fake behind the same
+interface.
 
 | Trigger                        | To     | Content                                                                 |
 |--------------------------------|--------|-------------------------------------------------------------------------|
@@ -508,8 +540,10 @@ Public (`/api/v1/public`, token in path, rate limited):
    in the database, the API, and the email.
 7. Email failures after a successful signature do not roll back the
    signature.
-8. Tooling: `uv` for Python, `npm` for web, `docker compose` for Postgres,
-   MinIO, and Mailpit; real Postgres in tests with faked storage and email.
+8. Tooling: `uv` for Python, `npm` for web, native Postgres 16 and Mailpit
+   from Homebrew. No Docker in local dev. Real Postgres in tests (a service
+   container in CI), `local` storage in a temp folder, faked email.
+   Superseded the earlier `docker compose` + MinIO decision on 2026-09-26.
 9. Limits: 14-day default link TTL (1–30 per send), 5-minute download URLs,
    20 MB PDFs, 500 KB PNG signatures.
 10. Send returns the signing link; email is optional via `send_email`
@@ -526,6 +560,11 @@ Public (`/api/v1/public`, token in path, rate limited):
     anonymization never updates or deletes a `contract_events` row.
 16. Consent and certificate text are `v0-draft` placeholders.
 17. Certificate timestamps are shown in both Asia/Kathmandu and UTC.
+18. File storage has two backends behind one interface, chosen by
+    `STORAGE_BACKEND`: `local` (default for dev and tests) and `s3`
+    (production). The `local` backend serves its own HMAC-signed download
+    route so the "no PDF bytes through API endpoints" rule keeps the same
+    shape in every environment (§6).
 
 ### Open questions
 

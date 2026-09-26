@@ -1,0 +1,86 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: scripts/check.sh
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: foodverse
+          POSTGRES_PASSWORD: foodverse
+          POSTGRES_DB: foodverse_contracts
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U foodverse"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      ENVIRONMENT: test
+      DATABASE_URL: postgresql+asyncpg://foodverse:foodverse@localhost:5432/foodverse_contracts
+      TEST_DATABASE_URL: postgresql+asyncpg://foodverse:foodverse@localhost:5432/foodverse_contracts_test
+      RETENTION_DATABASE_URL: postgresql+asyncpg://foodverse_retention:foodverse@localhost:5432/foodverse_contracts
+      STORAGE_BACKEND: local
+      LOCAL_STORAGE_DIR: ${{ github.workspace }}/.local-storage
+      JWT_SECRET: ci-only-placeholder-secret-not-used-anywhere-else-0000
+      SMTP_HOST: localhost
+      SMTP_PORT: "1025"
+      CI: "true"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Detect which parts have code
+        id: parts
+        run: |
+          echo "api=$([ -f api/pyproject.toml ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "web=$([ -f web/package.json ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - name: Create test database and retention role
+        env:
+          PGPASSWORD: foodverse
+        run: |
+          psql -h localhost -U foodverse -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE foodverse_contracts_test OWNER foodverse;"
+          psql -h localhost -U foodverse -d postgres -v ON_ERROR_STOP=1 -c "CREATE ROLE foodverse_retention LOGIN PASSWORD 'foodverse';"
+          mkdir -p "$LOCAL_STORAGE_DIR"
+
+      # --- python / uv (cached) ---
+      - uses: actions/setup-python@v5
+        if: steps.parts.outputs.api == 'true'
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v6
+        if: steps.parts.outputs.api == 'true'
+        with:
+          enable-cache: true
+          cache-dependency-glob: "api/uv.lock"
+          ignore-nothing-to-cache: true
+
+      # --- node / npm (cached) ---
+      - uses: actions/setup-node@v4
+        if: steps.parts.outputs.web == 'true'
+        with:
+          node-version: "20"
+      - uses: actions/cache@v4
+        if: steps.parts.outputs.web == 'true'
+        with:
+          path: ~/.npm
+          key: npm-${{ runner.os }}-${{ hashFiles('web/package-lock.json') }}
+          restore-keys: npm-${{ runner.os }}-
+
+      - name: Run checks
+        run: scripts/check.sh
