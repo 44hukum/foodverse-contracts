@@ -10,6 +10,7 @@
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:e2e": "playwright test",
     "lint": "eslint .",
     "typecheck": "tsc -b --noEmit",
     "generate:api": "openapi-typescript ../openapi.yaml -o src/api/schema.d.ts"
@@ -17,9 +18,11 @@
   "dependencies": {
     "react": "18.3.1",
     "react-dom": "18.3.1",
-    "react-router-dom": "6.30.6"
+    "react-router-dom": "6.30.6",
+    "react-signature-canvas": "^1.0.7"
   },
   "devDependencies": {
+    "@playwright/test": "^1.56.1",
     "@testing-library/dom": "10.4.2",
     "@testing-library/jest-dom": "6.9.1",
     "@testing-library/react": "16.3.3",
@@ -27,6 +30,7 @@
     "@types/node": "22.20.4",
     "@types/react": "18.3.31",
     "@types/react-dom": "18.3.7",
+    "@types/react-signature-canvas": "^1.0.7",
     "@vitejs/plugin-react": "5.2.0",
     "eslint": "9.39.5",
     "eslint-plugin-react-hooks": "5.2.0",
