@@ -34,6 +34,7 @@ from app.models.contract import Contract, ContractStatus
 from app.models.event import ActorType, EventType
 from app.models.event import ContractEvent as ContractEventModel
 from app.models.signer import Signer
+from app.notify import Mailer, send_signed_copies, send_signing_link
 from app.pdf import AuditEvent, CertificateDetails, PdfSigningError, sign_pdf
 from app.pdf.image import decode_signature_png
 from app.schemas.common import ErrorCode
@@ -80,6 +81,7 @@ def _values(statuses: tuple[ContractStatus, ...]) -> list[str]:
 async def send_link(
     session: AsyncSession,
     settings: Settings,
+    mailer: Mailer,
     *,
     contract_id: uuid.UUID,
     admin_id: uuid.UUID,
@@ -88,9 +90,10 @@ async def send_link(
 ) -> SendContractResponse:
     """Issue a fresh token, invalidating any previous one, and move the contract to ``sent``.
 
-    Email delivery is wired in by the notifications issue; until then
-    ``email_sent`` is always false and the event still records the requested
-    delivery mode so the audit trail reflects what the admin asked for.
+    With ``send_email`` the link is then emailed to the signer; ``email_sent``
+    reports whether the SMTP handoff succeeded. A failed email never undoes
+    the send (the link is in the response either way) and is visible as a
+    ``notification.failed`` event.
     """
     contract = (
         await session.execute(select(Contract).where(Contract.id == contract_id).with_for_update())
@@ -169,11 +172,26 @@ async def send_link(
         occurred_at=now,
     )
     await session.commit()
+    signing_url = tokens.signing_url(settings, token)
+    email_sent = False
+    if request.send_email:
+        email_sent = await send_signing_link(
+            session,
+            settings,
+            mailer,
+            contract=contract,
+            signer_name=signer.name,
+            signer_email=signer.email,
+            admin_id=admin_id,
+            signing_url=signing_url,
+            expires_at=expires_at,
+            note=request.message,
+        )
     detail = await get_contract(session, contract_id)
     return SendContractResponse(
         contract=detail,
-        signing_link=SigningLink(url=tokens.signing_url(settings, token), expires_at=expires_at),
-        email_sent=False,
+        signing_link=SigningLink(url=signing_url, expires_at=expires_at),
+        email_sent=email_sent,
     )
 
 
@@ -402,6 +420,7 @@ async def submit_signature(
     session: AsyncSession,
     settings: Settings,
     storage: StorageBackend,
+    mailer: Mailer,
     *,
     token: str,
     body: SubmitSignatureRequest,
@@ -411,7 +430,8 @@ async def submit_signature(
 
     Nothing is stored unless every step succeeds: the stamped PDF and the
     signature PNG are written to storage first and removed again if the
-    database transaction does not commit.
+    database transaction does not commit. The completion emails (step 8) go
+    out only after the commit and cannot fail the request.
     """
     raw_png = decode_signature_data_url(settings, body.signature_image)
     if body.consent_text_version != settings.consent_text_version:
@@ -542,6 +562,19 @@ async def submit_signature(
         await storage.delete(signed_key)
         await storage.delete(png_key)
         raise
+
+    await send_signed_copies(
+        session,
+        settings,
+        storage,
+        mailer,
+        contract=contract,
+        signer=signer,
+        pdf_key=signed_key,
+        pdf_bytes=signed.pdf_bytes,
+        sha256=signed.sha256_hex,
+        signed_at=now,
+    )
 
     ttl = settings.download_url_ttl_seconds
     filename = download_filename(contract.title, PdfVariant.signed)

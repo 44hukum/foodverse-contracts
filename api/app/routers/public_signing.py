@@ -12,7 +12,15 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Path, Request
 
-from app.deps import ClientDep, LimiterDep, SessionDep, SettingsDep, StorageDep, client_ip
+from app.deps import (
+    ClientDep,
+    LimiterDep,
+    MailerDep,
+    SessionDep,
+    SettingsDep,
+    StorageDep,
+    client_ip,
+)
 from app.errors import rate_limited
 from app.routers.responses import (
     BAD_REQUEST,
@@ -96,8 +104,9 @@ async def submit_signature(
     session: SessionDep,
     settings: SettingsDep,
     storage: StorageDep,
+    mailer: MailerDep,
     client: ClientDep,
 ) -> SignatureResult:
     return await svc.submit_signature(
-        session, settings, storage, token=token, body=body, client=client
+        session, settings, storage, mailer, token=token, body=body, client=client
     )

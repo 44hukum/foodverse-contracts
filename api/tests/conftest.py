@@ -4,7 +4,8 @@ Tests run against the real Postgres named by TEST_DATABASE_URL. The schema is
 migrated once per session; each test then runs inside one outer transaction
 that is rolled back at the end, so tests never DELETE or TRUNCATE anything
 (and never touch contract_events except by inserting). Storage uses the local
-backend in a per-test temp folder. No network, no SMTP.
+backend in a per-test temp folder. Email goes to an in-memory outbox. No network,
+no SMTP.
 """
 
 from __future__ import annotations
@@ -63,6 +64,7 @@ from alembic import command  # noqa: E402
 from app.config import Settings  # noqa: E402
 from app.main import create_app  # noqa: E402
 from app.models import Admin, Contract, ContractEvent, Signer  # noqa: E402
+from app.notify import InMemoryMailer  # noqa: E402
 from app.security import create_admin_token, hash_password  # noqa: E402
 
 TEST_DB_URL = os.environ["TEST_DATABASE_URL"]
@@ -125,9 +127,18 @@ def settings(tmp_path: Path) -> Settings:
 
 
 @pytest.fixture
-def app(settings: Settings, session_factory: async_sessionmaker[AsyncSession]) -> FastAPI:
+def mailer() -> InMemoryMailer:
+    """The outbox every email under test lands in; never a network mail server."""
+    return InMemoryMailer()
+
+
+@pytest.fixture
+def app(
+    settings: Settings, session_factory: async_sessionmaker[AsyncSession], mailer: InMemoryMailer
+) -> FastAPI:
     application = create_app(settings)
     application.state.session_factory = session_factory
+    application.state.mailer = mailer
     return application
 
 

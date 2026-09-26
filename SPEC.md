@@ -501,10 +501,15 @@ interface.
 | `contract.signed`              | Signer | Confirmation; signed PDF attached, or a 72-hour download link if oversized; SHA-256 in the body. |
 | `contract.signed`              | Admin (`created_by`) | Same as signer plus a link to the admin contract page.    |
 
-Every send attempt writes `notification.sent` or `notification.failed` with
+Every notification writes `notification.sent` or `notification.failed` with
 the recipient role (never the address), the delivery mode
-(`attachment` or `link`), and the SMTP message id in `metadata`. Failures
-are surfaced in the admin UI; there is no automatic retry in v1.
+(`attachment` or `link`; the signing-link email is `link`), the message id,
+and the number of attempts in `metadata`. A notification is attempted up to
+`EMAIL_SEND_ATTEMPTS` times in a row (default 3, each SMTP attempt bounded
+by `SMTP_TIMEOUT_SECONDS`) inside the request that triggered it; if every
+attempt fails the failure is recorded and the request still succeeds. There
+is no background retry queue in v1: failures are surfaced in the admin UI
+and the admin re-sends (or downloads and forwards the signed copy) by hand.
 
 ## 11. Interfaces
 

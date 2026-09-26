@@ -13,6 +13,7 @@ from app.config import Settings
 from app.db import get_session
 from app.errors import unauthorized
 from app.models.admin import Admin
+from app.notify import Mailer
 from app.ratelimit import RateLimiter
 from app.security import decode_admin_token
 from app.services.auth import get_admin_by_id
@@ -30,6 +31,11 @@ def get_settings_dep(request: Request) -> Settings:
 def get_storage(request: Request) -> StorageBackend:
     storage: StorageBackend = request.app.state.storage
     return storage
+
+
+def get_mailer(request: Request) -> Mailer:
+    mailer: Mailer = request.app.state.mailer
+    return mailer
 
 
 def get_rate_limiter(request: Request) -> RateLimiter:
@@ -83,3 +89,4 @@ StorageDep = Annotated[StorageBackend, Depends(get_storage)]
 CurrentAdmin = Annotated[Admin, Depends(get_current_admin)]
 ClientDep = Annotated[ClientInfo, Depends(get_client_info)]
 LimiterDep = Annotated[RateLimiter, Depends(get_rate_limiter)]
+MailerDep = Annotated[Mailer, Depends(get_mailer)]
